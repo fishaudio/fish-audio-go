@@ -1,4 +1,4 @@
-module fish-audio-go
+module github.com/fishaudio/fish-audio-go
 
 go 1.25
 
