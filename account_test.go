@@ -24,7 +24,7 @@ func TestAccountService_GetCredits_DefaultParams(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Credits{
+		_ = json.NewEncoder(w).Encode(Credits{
 			ID:     "credit-123",
 			UserID: "user-456",
 			Credit: "100.50",
@@ -54,7 +54,7 @@ func TestAccountService_GetCredits_WithCheckFreeCredit(t *testing.T) {
 
 		hasFreeCredit := true
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Credits{
+		_ = json.NewEncoder(w).Encode(Credits{
 			ID:            "credit-123",
 			Credit:        "50.00",
 			HasFreeCredit: &hasFreeCredit,
@@ -85,7 +85,7 @@ func TestAccountService_GetPackage(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Package{
+		_ = json.NewEncoder(w).Encode(Package{
 			ID:      "pkg-123",
 			UserID:  "user-456",
 			Type:    "premium",
@@ -118,7 +118,7 @@ func TestAccountService_GetPackage(t *testing.T) {
 func TestAccountService_GetCredits_Error(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"error": "unauthorized"}`))
+		_, _ = w.Write([]byte(`{"error": "unauthorized"}`))
 	}))
 	defer server.Close()
 
@@ -137,7 +137,7 @@ func TestAccountService_GetCredits_Error(t *testing.T) {
 func TestAccountService_GetPackage_Error(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(`{"error": "not found"}`))
+		_, _ = w.Write([]byte(`{"error": "not found"}`))
 	}))
 	defer server.Close()
 

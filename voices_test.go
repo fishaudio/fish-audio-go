@@ -28,7 +28,7 @@ func TestVoicesService_List_DefaultParams(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(PaginatedResponse[Voice]{
+		_ = json.NewEncoder(w).Encode(PaginatedResponse[Voice]{
 			Total: 0,
 			Items: []Voice{},
 		})
@@ -77,7 +77,7 @@ func TestVoicesService_List_WithParams(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(PaginatedResponse[Voice]{
+		_ = json.NewEncoder(w).Encode(PaginatedResponse[Voice]{
 			Total: 0,
 			Items: []Voice{},
 		})
@@ -103,7 +103,7 @@ func TestVoicesService_List_WithParams(t *testing.T) {
 func TestVoicesService_List_Response(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(PaginatedResponse[Voice]{
+		_ = json.NewEncoder(w).Encode(PaginatedResponse[Voice]{
 			Total: 2,
 			Items: []Voice{
 				{ID: "voice-1", Title: "Voice One"},
@@ -140,7 +140,7 @@ func TestVoicesService_Get(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Voice{
+		_ = json.NewEncoder(w).Encode(Voice{
 			ID:    "voice-123",
 			Title: "Test Voice",
 		})
@@ -207,7 +207,7 @@ func TestVoicesService_Create_Defaults(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Voice{ID: "new-voice"})
+		_ = json.NewEncoder(w).Encode(Voice{ID: "new-voice"})
 	}))
 	defer server.Close()
 

@@ -21,8 +21,8 @@ func TestNewClient_WithAPIKey(t *testing.T) {
 
 func TestNewClient_EnvFallback(t *testing.T) {
 	envKey := "env-api-key-67890"
-	os.Setenv("FISH_API_KEY", envKey)
-	defer os.Unsetenv("FISH_API_KEY")
+	_ = os.Setenv("FISH_API_KEY", envKey)
+	defer func() { _ = os.Unsetenv("FISH_API_KEY") }()
 
 	client := NewClient("")
 
@@ -107,7 +107,7 @@ func TestClient_DoRequest_SetsHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doRequest() error = %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 func TestClient_DoRequest_WithBody(t *testing.T) {
@@ -141,7 +141,7 @@ func TestClient_DoRequest_WithBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doRequest() error = %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 func TestClient_DoRequest_WithRequestOptions(t *testing.T) {
@@ -176,13 +176,13 @@ func TestClient_DoRequest_WithRequestOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doRequest() error = %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 func TestClient_DoRequest_ErrorResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"error": "invalid_token"}`))
+		_, _ = w.Write([]byte(`{"error": "invalid_token"}`))
 	}))
 	defer server.Close()
 
@@ -207,7 +207,7 @@ func TestClient_DoJSONRequest(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response{ID: "123", Name: "test"})
+		_ = json.NewEncoder(w).Encode(response{ID: "123", Name: "test"})
 	}))
 	defer server.Close()
 

@@ -146,7 +146,7 @@ func TestAudioStream_Read_Closed(t *testing.T) {
 		Body: newMockReadCloser(data),
 	}
 	stream := newAudioStream(resp)
-	stream.Close()
+	_ = stream.Close()
 
 	buf := make([]byte, 10)
 	n, err := stream.Read(buf)
@@ -216,7 +216,7 @@ func TestAudioStream_Next_AfterClosed(t *testing.T) {
 		Body: newMockReadCloser(data),
 	}
 	stream := newAudioStream(resp)
-	stream.Close()
+	_ = stream.Close()
 
 	if stream.Next() {
 		t.Error("Next() should return false after Close()")

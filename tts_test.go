@@ -260,7 +260,7 @@ func TestTTSService_Stream(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "audio/mpeg")
-		w.Write(audioData)
+		_, _ = w.Write(audioData)
 	}))
 	defer server.Close()
 
@@ -287,7 +287,7 @@ func TestTTSService_Convert(t *testing.T) {
 	audioData := []byte("fake audio data for convert")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "audio/mpeg")
-		w.Write(audioData)
+		_, _ = w.Write(audioData)
 	}))
 	defer server.Close()
 
