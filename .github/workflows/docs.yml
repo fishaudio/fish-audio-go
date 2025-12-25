@@ -21,10 +21,14 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: stable
+          cache-dependency-path: sdk/go.sum
+
+      - name: Install gomarkdoc
+        run: go install github.com/princjef/gomarkdoc/cmd/gomarkdoc@latest
 
       - name: Generate API documentation
         working-directory: sdk
-        run: go run github.com/princjef/gomarkdoc/cmd/gomarkdoc@latest -o build/docs/fishaudio.md .
+        run: gomarkdoc -o build/docs/fishaudio.md .
 
       - name: Checkout docs
         uses: actions/checkout@v6
