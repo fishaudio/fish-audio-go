@@ -48,14 +48,14 @@ func TestDefaultWebSocketOptions(t *testing.T) {
 	if opts.PingInterval != 20*time.Second {
 		t.Errorf("PingInterval = %v, want %v", opts.PingInterval, 20*time.Second)
 	}
-	if opts.MaxMessageSize != 65536 {
-		t.Errorf("MaxMessageSize = %d, want %d", opts.MaxMessageSize, 65536)
+	if opts.MaxMessageSize != 10*1024*1024 {
+		t.Errorf("MaxMessageSize = %d, want %d", opts.MaxMessageSize, 10*1024*1024)
 	}
-	if opts.ReadBufferSize != 1024 {
-		t.Errorf("ReadBufferSize = %d, want %d", opts.ReadBufferSize, 1024)
+	if opts.ReadBufferSize != 32*1024 {
+		t.Errorf("ReadBufferSize = %d, want %d", opts.ReadBufferSize, 32*1024)
 	}
-	if opts.WriteBufferSize != 1024 {
-		t.Errorf("WriteBufferSize = %d, want %d", opts.WriteBufferSize, 1024)
+	if opts.WriteBufferSize != 32*1024 {
+		t.Errorf("WriteBufferSize = %d, want %d", opts.WriteBufferSize, 32*1024)
 	}
 }
 

@@ -52,7 +52,7 @@ type WebSocketOptions struct {
 	PingInterval time.Duration
 
 	// MaxMessageSize is the maximum message size in bytes.
-	// Default: 65536 bytes (64 KiB).
+	// Default: 10 MiB.
 	MaxMessageSize int64
 
 	// ReadBufferSize is the size of the read buffer.
@@ -67,8 +67,8 @@ func DefaultWebSocketOptions() *WebSocketOptions {
 	return &WebSocketOptions{
 		PingTimeout:     20 * time.Second,
 		PingInterval:    20 * time.Second,
-		MaxMessageSize:  65536,
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
+		MaxMessageSize:  10 * 1024 * 1024, // 10 MiB - audio chunks can be large
+		ReadBufferSize:  32 * 1024,        // 32 KiB
+		WriteBufferSize: 32 * 1024,        // 32 KiB
 	}
 }

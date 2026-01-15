@@ -15,21 +15,23 @@ import (
 // ReferenceAudio contains reference audio for voice cloning.
 type ReferenceAudio struct {
 	// Audio is the audio file bytes for the reference sample.
-	Audio []byte `json:"audio"`
+	Audio []byte `json:"audio" msgpack:"audio"`
 	// Text is the transcription of what is spoken in the reference audio.
-	Text string `json:"text"`
+	Text string `json:"text" msgpack:"text"`
 }
 
 // Prosody contains speech prosody settings (speed and volume).
 type Prosody struct {
 	// Speed is the speech speed multiplier. Range: 0.5-2.0. Default: 1.0.
-	Speed float64 `json:"speed,omitempty"`
+	Speed float64 `json:"speed,omitempty" msgpack:"speed,omitempty"`
 	// Volume is the volume adjustment in decibels. Range: -20.0 to 20.0. Default: 0.0.
-	Volume float64 `json:"volume,omitempty"`
+	Volume float64 `json:"volume,omitempty" msgpack:"volume,omitempty"`
 }
 
 // TTSConfig is reusable configuration for text-to-speech requests.
 type TTSConfig struct {
+	// Model is the TTS model to use. Options: "s1", "speech-1.6", "speech-1.5". Default: "s1".
+	Model Model `json:"model,omitempty"`
 	// Format is the audio output format. Options: "mp3", "wav", "pcm", "opus". Default: "mp3".
 	Format AudioFormat `json:"format,omitempty"`
 	// SampleRate is the audio sample rate in Hz.
@@ -60,6 +62,8 @@ type TTSConfig struct {
 type ConvertParams struct {
 	// Text is the text to synthesize into speech (required).
 	Text string `json:"text"`
+	// Model is the TTS model to use. Options: "s1", "speech-1.6", "speech-1.5". Default: "s1".
+	Model Model `json:"model,omitempty"`
 	// ReferenceID is the voice model ID to use.
 	ReferenceID string `json:"reference_id,omitempty"`
 	// References is a list of reference audio for voice cloning.
@@ -78,6 +82,8 @@ type ConvertParams struct {
 type StreamParams struct {
 	// Text is the text to synthesize into speech (required).
 	Text string `json:"text"`
+	// Model is the TTS model to use. Options: "s1", "speech-1.6", "speech-1.5". Default: "s1".
+	Model Model `json:"-"`
 	// ReferenceID is the voice model ID to use.
 	ReferenceID string `json:"reference_id,omitempty"`
 	// References is a list of reference audio for voice cloning.
@@ -94,19 +100,19 @@ type StreamParams struct {
 
 // ttsRequest is the internal API request structure.
 type ttsRequest struct {
-	Text        string           `json:"text"`
-	ChunkLength int              `json:"chunk_length,omitempty"`
-	Format      AudioFormat      `json:"format,omitempty"`
-	SampleRate  int              `json:"sample_rate,omitempty"`
-	MP3Bitrate  int              `json:"mp3_bitrate,omitempty"`
-	OpusBitrate int              `json:"opus_bitrate,omitempty"`
-	References  []ReferenceAudio `json:"references,omitempty"`
-	ReferenceID string           `json:"reference_id,omitempty"`
-	Normalize   *bool            `json:"normalize,omitempty"`
-	Latency     LatencyMode      `json:"latency,omitempty"`
-	Prosody     *Prosody         `json:"prosody,omitempty"`
-	TopP        float64          `json:"top_p,omitempty"`
-	Temperature float64          `json:"temperature,omitempty"`
+	Text        string           `json:"text" msgpack:"text"`
+	ChunkLength int              `json:"chunk_length,omitempty" msgpack:"chunk_length,omitempty"`
+	Format      AudioFormat      `json:"format,omitempty" msgpack:"format,omitempty"`
+	SampleRate  int              `json:"sample_rate,omitempty" msgpack:"sample_rate,omitempty"`
+	MP3Bitrate  int              `json:"mp3_bitrate,omitempty" msgpack:"mp3_bitrate,omitempty"`
+	OpusBitrate int              `json:"opus_bitrate,omitempty" msgpack:"opus_bitrate,omitempty"`
+	References  []ReferenceAudio `json:"references,omitempty" msgpack:"references,omitempty"`
+	ReferenceID string           `json:"reference_id,omitempty" msgpack:"reference_id,omitempty"`
+	Normalize   *bool            `json:"normalize,omitempty" msgpack:"normalize,omitempty"`
+	Latency     LatencyMode      `json:"latency,omitempty" msgpack:"latency,omitempty"`
+	Prosody     *Prosody         `json:"prosody,omitempty" msgpack:"prosody,omitempty"`
+	TopP        float64          `json:"top_p,omitempty" msgpack:"top_p,omitempty"`
+	Temperature float64          `json:"temperature,omitempty" msgpack:"temperature,omitempty"`
 }
 
 // TTSService provides text-to-speech operations.
@@ -118,6 +124,7 @@ type TTSService struct {
 func (s *TTSService) Convert(ctx context.Context, params *ConvertParams) ([]byte, error) {
 	stream, err := s.Stream(ctx, &StreamParams{
 		Text:        params.Text,
+		Model:       params.Model,
 		ReferenceID: params.ReferenceID,
 		References:  params.References,
 		Format:      params.Format,
@@ -135,12 +142,32 @@ func (s *TTSService) Convert(ctx context.Context, params *ConvertParams) ([]byte
 func (s *TTSService) Stream(ctx context.Context, params *StreamParams) (*AudioStream, error) {
 	req := s.buildRequest(params)
 
-	resp, err := s.client.doRequest(ctx, http.MethodPost, "/v1/tts", req, nil)
+	// Build request options with model header
+	var opts *RequestOptions
+	model := s.getModel(params)
+	if model != "" {
+		opts = &RequestOptions{
+			AdditionalHeaders: map[string]string{"model": string(model)},
+		}
+	}
+
+	resp, err := s.client.doRequest(ctx, http.MethodPost, "/v1/tts", req, opts)
 	if err != nil {
 		return nil, err
 	}
 
 	return newAudioStream(resp), nil
+}
+
+// getModel returns the model to use, checking params then config.
+func (s *TTSService) getModel(params *StreamParams) Model {
+	if params.Model != "" {
+		return params.Model
+	}
+	if params.Config != nil && params.Config.Model != "" {
+		return params.Config.Model
+	}
+	return ""
 }
 
 // buildRequest constructs the API request from params.
@@ -250,9 +277,12 @@ func (s *TTSService) StreamWebSocket(ctx context.Context, textChan <-chan string
 		WriteBufferSize: opts.WriteBufferSize,
 	}
 
-	// Connect with auth header
+	// Connect with auth and model headers
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+s.client.apiKey)
+	if model := s.getModel(params); model != "" {
+		header.Set("model", string(model))
+	}
 
 	conn, _, err := dialer.DialContext(ctx, wsURL, header)
 	if err != nil {
@@ -329,7 +359,9 @@ func (s *TTSService) StreamWebSocket(ctx context.Context, textChan <-chan string
 		for {
 			_, data, err := conn.ReadMessage()
 			if err != nil {
-				if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+				// Handle normal closure and no-status-received (1005) as expected closures
+				// Server often closes without a formal close frame after sending finish event
+				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseNoStatusReceived) {
 					return
 				}
 				select {
@@ -355,9 +387,11 @@ func (s *TTSService) StreamWebSocket(ctx context.Context, textChan <-chan string
 					audioChan <- resp.Audio
 				}
 			case "finish":
+				// "stop" is normal - means we requested the stop
+				// Only treat "error" as an actual error
 				if resp.Reason == "error" {
 					select {
-					case errChan <- &WebSocketError{Message: "stream ended with error"}:
+					case errChan <- &WebSocketError{Message: "stream finished with error"}:
 					default:
 					}
 				}
