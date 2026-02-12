@@ -1,3 +1,5 @@
+![go.png](https://raw.githubusercontent.com/fishaudio/fish-audio-go/refs/heads/main/.github/assets/go.png)
+
 # Fish Audio Go SDK
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/fishaudio/fish-audio-go.svg)](https://pkg.go.dev/github.com/fishaudio/fish-audio-go)
