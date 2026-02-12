@@ -8,7 +8,7 @@ import (
 
 func TestWithBaseURL(t *testing.T) {
 	customURL := "https://custom.api.example.com"
-	client := NewClient("test-key", WithBaseURL(customURL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(customURL))
 
 	if client.baseURL != customURL {
 		t.Errorf("WithBaseURL() baseURL = %q, want %q", client.baseURL, customURL)
@@ -19,7 +19,7 @@ func TestWithHTTPClient(t *testing.T) {
 	customClient := &http.Client{
 		Timeout: 5 * time.Second,
 	}
-	client := NewClient("test-key", WithHTTPClient(customClient))
+	client := NewClient(WithAPIKey("test-key"), WithHTTPClient(customClient))
 
 	if client.httpClient != customClient {
 		t.Error("WithHTTPClient() did not set custom HTTP client")
@@ -28,7 +28,7 @@ func TestWithHTTPClient(t *testing.T) {
 
 func TestWithTimeout(t *testing.T) {
 	customTimeout := 60 * time.Second
-	client := NewClient("test-key", WithTimeout(customTimeout))
+	client := NewClient(WithAPIKey("test-key"), WithTimeout(customTimeout))
 
 	if client.timeout != customTimeout {
 		t.Errorf("WithTimeout() timeout = %v, want %v", client.timeout, customTimeout)

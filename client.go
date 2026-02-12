@@ -38,14 +38,9 @@ type Client struct {
 
 // NewClient creates a new Fish Audio API client.
 //
-// If apiKey is empty, it will try to read from the FISH_API_KEY environment variable.
-func NewClient(apiKey string, opts ...ClientOption) *Client {
-	if apiKey == "" {
-		apiKey = os.Getenv("FISH_API_KEY")
-	}
-
+// If no API key is provided via WithAPIKey, it will fall back to the FISH_API_KEY environment variable.
+func NewClient(opts ...ClientOption) *Client {
 	c := &Client{
-		apiKey:  apiKey,
 		baseURL: DefaultBaseURL,
 		timeout: DefaultTimeout,
 		httpClient: &http.Client{
@@ -55,6 +50,11 @@ func NewClient(apiKey string, opts ...ClientOption) *Client {
 
 	for _, opt := range opts {
 		opt(c)
+	}
+
+	// Fall back to env var if no API key was set via options
+	if c.apiKey == "" {
+		c.apiKey = os.Getenv("FISH_API_KEY")
 	}
 
 	// Update HTTP client timeout if changed

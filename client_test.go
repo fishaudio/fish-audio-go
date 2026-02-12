@@ -12,7 +12,7 @@ import (
 
 func TestNewClient_WithAPIKey(t *testing.T) {
 	apiKey := "test-api-key-12345"
-	client := NewClient(apiKey)
+	client := NewClient(WithAPIKey(apiKey))
 
 	if client.apiKey != apiKey {
 		t.Errorf("apiKey = %q, want %q", client.apiKey, apiKey)
@@ -24,7 +24,7 @@ func TestNewClient_EnvFallback(t *testing.T) {
 	_ = os.Setenv("FISH_API_KEY", envKey)
 	defer func() { _ = os.Unsetenv("FISH_API_KEY") }()
 
-	client := NewClient("")
+	client := NewClient()
 
 	if client.apiKey != envKey {
 		t.Errorf("apiKey = %q, want %q (from env)", client.apiKey, envKey)
@@ -35,7 +35,8 @@ func TestNewClient_WithOptions(t *testing.T) {
 	customURL := "https://custom.api.example.com"
 	customTimeout := 60 * time.Second
 
-	client := NewClient("test-key",
+	client := NewClient(
+		WithAPIKey("test-key"),
 		WithBaseURL(customURL),
 		WithTimeout(customTimeout),
 	)
@@ -49,7 +50,7 @@ func TestNewClient_WithOptions(t *testing.T) {
 }
 
 func TestNewClient_ServicesInitialized(t *testing.T) {
-	client := NewClient("test-key")
+	client := NewClient(WithAPIKey("test-key"))
 
 	if client.TTS == nil {
 		t.Error("TTS service is nil")
@@ -66,7 +67,7 @@ func TestNewClient_ServicesInitialized(t *testing.T) {
 }
 
 func TestNewClient_DefaultValues(t *testing.T) {
-	client := NewClient("test-key")
+	client := NewClient(WithAPIKey("test-key"))
 
 	if client.baseURL != DefaultBaseURL {
 		t.Errorf("baseURL = %q, want %q", client.baseURL, DefaultBaseURL)
@@ -77,7 +78,7 @@ func TestNewClient_DefaultValues(t *testing.T) {
 }
 
 func TestClient_Close(t *testing.T) {
-	client := NewClient("test-key")
+	client := NewClient(WithAPIKey("test-key"))
 	err := client.Close()
 	if err != nil {
 		t.Errorf("Close() error = %v, want nil", err)
@@ -102,7 +103,7 @@ func TestClient_DoRequest_SetsHeaders(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	resp, err := client.doRequest(context.Background(), http.MethodGet, "/test", nil, nil)
 	if err != nil {
 		t.Fatalf("doRequest() error = %v", err)
@@ -135,7 +136,7 @@ func TestClient_DoRequest_WithBody(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	resp, err := client.doRequest(context.Background(), http.MethodPost, "/test",
 		testBody{Name: "test", Value: 42}, nil)
 	if err != nil {
@@ -162,7 +163,7 @@ func TestClient_DoRequest_WithRequestOptions(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	opts := &RequestOptions{
 		AdditionalHeaders: map[string]string{
 			"X-Custom-Header": "custom-value",
@@ -186,7 +187,7 @@ func TestClient_DoRequest_ErrorResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	_, err := client.doRequest(context.Background(), http.MethodGet, "/test", nil, nil)
 
 	if err == nil {
@@ -211,7 +212,7 @@ func TestClient_DoJSONRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	var result response
 	err := client.doJSONRequest(context.Background(), http.MethodGet, "/test", nil, &result, nil)
 

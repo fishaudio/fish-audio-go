@@ -32,7 +32,7 @@ func TestAccountService_GetCredits_DefaultParams(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	credits, err := client.Account.GetCredits(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("GetCredits() error = %v", err)
@@ -62,7 +62,7 @@ func TestAccountService_GetCredits_WithCheckFreeCredit(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	credits, err := client.Account.GetCredits(context.Background(), &GetCreditsParams{
 		CheckFreeCredit: true,
 	})
@@ -95,7 +95,7 @@ func TestAccountService_GetPackage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	pkg, err := client.Account.GetPackage(context.Background())
 	if err != nil {
 		t.Fatalf("GetPackage() error = %v", err)
@@ -122,7 +122,7 @@ func TestAccountService_GetCredits_Error(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	_, err := client.Account.GetCredits(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -141,7 +141,7 @@ func TestAccountService_GetPackage_Error(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	_, err := client.Account.GetPackage(context.Background())
 	if err == nil {
 		t.Fatal("expected error, got nil")

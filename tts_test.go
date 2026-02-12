@@ -8,7 +8,7 @@ import (
 )
 
 func TestTTSService_BuildRequest_Minimal(t *testing.T) {
-	client := NewClient("test-key")
+	client := NewClient(WithAPIKey("test-key"))
 	service := client.TTS
 
 	params := &StreamParams{
@@ -26,7 +26,7 @@ func TestTTSService_BuildRequest_Minimal(t *testing.T) {
 }
 
 func TestTTSService_BuildRequest_WithReferenceID(t *testing.T) {
-	client := NewClient("test-key")
+	client := NewClient(WithAPIKey("test-key"))
 	service := client.TTS
 
 	params := &StreamParams{
@@ -42,7 +42,7 @@ func TestTTSService_BuildRequest_WithReferenceID(t *testing.T) {
 }
 
 func TestTTSService_BuildRequest_WithSpeed(t *testing.T) {
-	client := NewClient("test-key")
+	client := NewClient(WithAPIKey("test-key"))
 	service := client.TTS
 
 	params := &StreamParams{
@@ -61,7 +61,7 @@ func TestTTSService_BuildRequest_WithSpeed(t *testing.T) {
 }
 
 func TestTTSService_BuildRequest_WithFormat(t *testing.T) {
-	client := NewClient("test-key")
+	client := NewClient(WithAPIKey("test-key"))
 	service := client.TTS
 
 	params := &StreamParams{
@@ -77,7 +77,7 @@ func TestTTSService_BuildRequest_WithFormat(t *testing.T) {
 }
 
 func TestTTSService_BuildRequest_WithLatency(t *testing.T) {
-	client := NewClient("test-key")
+	client := NewClient(WithAPIKey("test-key"))
 	service := client.TTS
 
 	params := &StreamParams{
@@ -93,7 +93,7 @@ func TestTTSService_BuildRequest_WithLatency(t *testing.T) {
 }
 
 func TestTTSService_BuildRequest_WithConfig(t *testing.T) {
-	client := NewClient("test-key")
+	client := NewClient(WithAPIKey("test-key"))
 	service := client.TTS
 
 	normalize := true
@@ -144,7 +144,7 @@ func TestTTSService_BuildRequest_WithConfig(t *testing.T) {
 }
 
 func TestTTSService_BuildRequest_ConfigOverride(t *testing.T) {
-	client := NewClient("test-key")
+	client := NewClient(WithAPIKey("test-key"))
 	service := client.TTS
 
 	// Params should take precedence over config
@@ -174,7 +174,7 @@ func TestTTSService_BuildRequest_ConfigOverride(t *testing.T) {
 }
 
 func TestTTSService_BuildRequest_ConfigFallback(t *testing.T) {
-	client := NewClient("test-key")
+	client := NewClient(WithAPIKey("test-key"))
 	service := client.TTS
 
 	// Config values should be used when params are empty
@@ -201,7 +201,7 @@ func TestTTSService_BuildRequest_ConfigFallback(t *testing.T) {
 }
 
 func TestTTSService_BuildRequest_WithReferences(t *testing.T) {
-	client := NewClient("test-key")
+	client := NewClient(WithAPIKey("test-key"))
 	service := client.TTS
 
 	refs := []ReferenceAudio{
@@ -225,7 +225,7 @@ func TestTTSService_BuildRequest_WithReferences(t *testing.T) {
 }
 
 func TestTTSService_BuildRequest_ConfigProsodyFallback(t *testing.T) {
-	client := NewClient("test-key")
+	client := NewClient(WithAPIKey("test-key"))
 	service := client.TTS
 
 	// Config prosody should be used when speed is not set
@@ -264,7 +264,7 @@ func TestTTSService_Stream(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	stream, err := client.TTS.Stream(context.Background(), &StreamParams{
 		Text: "Hello",
 	})
@@ -291,7 +291,7 @@ func TestTTSService_Convert(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	data, err := client.TTS.Convert(context.Background(), &ConvertParams{
 		Text: "Hello",
 	})

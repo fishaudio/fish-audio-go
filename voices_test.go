@@ -35,7 +35,7 @@ func TestVoicesService_List_DefaultParams(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	_, err := client.Voices.List(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
@@ -84,7 +84,7 @@ func TestVoicesService_List_WithParams(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	_, err := client.Voices.List(context.Background(), &ListVoicesParams{
 		PageSize:   20,
 		PageNumber: 3,
@@ -113,7 +113,7 @@ func TestVoicesService_List_Response(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	result, err := client.Voices.List(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
@@ -147,7 +147,7 @@ func TestVoicesService_Get(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	voice, err := client.Voices.Get(context.Background(), "voice-123")
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
@@ -162,7 +162,7 @@ func TestVoicesService_Get(t *testing.T) {
 }
 
 func TestVoicesService_Create_RequiresVoices(t *testing.T) {
-	client := NewClient("test-key")
+	client := NewClient(WithAPIKey("test-key"))
 
 	// Test with nil params
 	_, err := client.Voices.Create(context.Background(), nil)
@@ -211,7 +211,7 @@ func TestVoicesService_Create_Defaults(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	_, err := client.Voices.Create(context.Background(), &CreateVoiceParams{
 		Title:  "Test Voice",
 		Voices: [][]byte{[]byte("audio data")},
@@ -233,7 +233,7 @@ func TestVoicesService_Delete(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-key", WithBaseURL(server.URL))
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
 	err := client.Voices.Delete(context.Background(), "voice-123")
 	if err != nil {
 		t.Fatalf("Delete() error = %v", err)
@@ -241,7 +241,7 @@ func TestVoicesService_Delete(t *testing.T) {
 }
 
 func TestVoicesService_Update_NilParams(t *testing.T) {
-	client := NewClient("test-key")
+	client := NewClient(WithAPIKey("test-key"))
 	err := client.Voices.Update(context.Background(), "voice-123", nil)
 	if err != nil {
 		t.Errorf("Update(nil) should not error, got %v", err)

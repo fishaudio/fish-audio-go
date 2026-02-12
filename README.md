@@ -27,7 +27,7 @@ Or provide directly:
 ```go
 import fishaudio "github.com/fishaudio/fish-audio-go"
 
-client := fishaudio.NewClient("your_api_key")
+client := fishaudio.NewClient(fishaudio.WithAPIKey("your_api_key"))
 ```
 
 ## Quick Start
@@ -44,7 +44,7 @@ import (
 )
 
 func main() {
-	client := fishaudio.NewClient("") // reads from FISH_API_KEY
+	client := fishaudio.NewClient() // reads from FISH_API_KEY
 	defer client.Close()
 
 	audio, err := client.TTS.Convert(context.Background(), &fishaudio.ConvertParams{
