@@ -2,8 +2,10 @@
 
 # Fish Audio Go SDK
 
+[![GitHub Release](https://img.shields.io/github/v/release/fishaudio/fish-audio-go)](https://github.com/fishaudio/fish-audio-go/releases)
 [![Go Reference](https://pkg.go.dev/badge/github.com/fishaudio/fish-audio-go.svg)](https://pkg.go.dev/github.com/fishaudio/fish-audio-go)
 [![Go Report Card](https://goreportcard.com/badge/github.com/fishaudio/fish-audio-go)](https://goreportcard.com/report/github.com/fishaudio/fish-audio-go)
+[![codecov](https://img.shields.io/codecov/c/github/fishaudio/fish-audio-go)](https://codecov.io/gh/fishaudio/fish-audio-go)
 [![License](https://img.shields.io/github/license/fishaudio/fish-audio-go)](https://github.com/fishaudio/fish-audio-go/blob/main/LICENSE)
 
 The official Go library for the Fish Audio API
