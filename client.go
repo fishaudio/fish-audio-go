@@ -19,7 +19,7 @@ const (
 	DefaultTimeout = 240 * time.Second
 
 	// Version is the SDK version.
-	Version = "0.1.0"
+	Version = "1.0.0" // x-release-please-version
 )
 
 // Client is the Fish Audio API client.

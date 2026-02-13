@@ -1,0 +1,11 @@
+{
+  "release-type": "go",
+  "include-v-in-tag": true,
+  "packages": {
+    ".": {
+      "extra-files": [
+        "client.go"
+      ]
+    }
+  }
+}
