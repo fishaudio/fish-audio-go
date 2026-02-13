@@ -3,9 +3,11 @@ package fishaudio
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -224,6 +226,123 @@ func TestClient_DoJSONRequest(t *testing.T) {
 	}
 	if result.Name != "test" {
 		t.Errorf("Name = %q, want %q", result.Name, "test")
+	}
+}
+
+func TestClient_DoRequest_MarshalError(t *testing.T) {
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL("http://localhost"))
+	// math.Inf produces a value that json.Marshal cannot handle
+	body := map[string]interface{}{"bad": math.Inf(1)}
+	_, err := client.doRequest(context.Background(), http.MethodPost, "/test", body, nil)
+	if err == nil {
+		t.Fatal("expected marshal error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to marshal") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "failed to marshal")
+	}
+}
+
+func TestClient_DoRequest_NetworkError(t *testing.T) {
+	// Use a port that is not listening
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL("http://127.0.0.1:1"))
+	_, err := client.doRequest(context.Background(), http.MethodGet, "/test", nil, nil)
+	if err == nil {
+		t.Fatal("expected network error, got nil")
+	}
+	if !strings.Contains(err.Error(), "request failed") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "request failed")
+	}
+}
+
+func TestClient_DoRequest_ContextCancelled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := client.doRequest(ctx, http.MethodGet, "/test", nil, nil)
+	if err == nil {
+		t.Fatal("expected error for cancelled context, got nil")
+	}
+}
+
+func TestClient_DoJSONRequest_MalformedJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{invalid json`))
+	}))
+	defer server.Close()
+
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
+	var result map[string]interface{}
+	err := client.doJSONRequest(context.Background(), http.MethodGet, "/test", nil, &result, nil)
+	if err == nil {
+		t.Fatal("expected decode error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to decode") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "failed to decode")
+	}
+}
+
+func TestClient_DoRequest_MultipleErrorStatuses(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		errType    string
+	}{
+		{"forbidden", 403, "PermissionError"},
+		{"not_found", 404, "NotFoundError"},
+		{"validation", 422, "ValidationError"},
+		{"rate_limit", 429, "RateLimitError"},
+		{"server_error", 500, "ServerError"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(`{"error": "test"}`))
+			}))
+			defer server.Close()
+
+			client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
+			_, err := client.doRequest(context.Background(), http.MethodGet, "/test", nil, nil)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+
+			switch tt.statusCode {
+			case 403:
+				var target *PermissionError
+				if !containsError(err, &target) {
+					t.Errorf("expected PermissionError, got %T: %v", err, err)
+				}
+			case 404:
+				var target *NotFoundError
+				if !containsError(err, &target) {
+					t.Errorf("expected NotFoundError, got %T: %v", err, err)
+				}
+			case 422:
+				var target *ValidationError
+				if !containsError(err, &target) {
+					t.Errorf("expected ValidationError, got %T: %v", err, err)
+				}
+			case 429:
+				var target *RateLimitError
+				if !containsError(err, &target) {
+					t.Errorf("expected RateLimitError, got %T: %v", err, err)
+				}
+			case 500:
+				var target *ServerError
+				if !containsError(err, &target) {
+					t.Errorf("expected ServerError, got %T: %v", err, err)
+				}
+			}
+		})
 	}
 }
 

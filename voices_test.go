@@ -247,3 +247,260 @@ func TestVoicesService_Update_NilParams(t *testing.T) {
 		t.Errorf("Update(nil) should not error, got %v", err)
 	}
 }
+
+func TestVoicesService_Create_AllFields(t *testing.T) {
+	enhanceQuality := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("Method = %q, want %q", r.Method, http.MethodPost)
+		}
+
+		err := r.ParseMultipartForm(10 << 20)
+		if err != nil {
+			t.Fatalf("ParseMultipartForm error = %v", err)
+		}
+
+		// Check all form fields
+		if r.FormValue("title") != "My Voice" {
+			t.Errorf("title = %q, want %q", r.FormValue("title"), "My Voice")
+		}
+		if r.FormValue("description") != "A test voice" {
+			t.Errorf("description = %q, want %q", r.FormValue("description"), "A test voice")
+		}
+		if r.FormValue("visibility") != "public" {
+			t.Errorf("visibility = %q, want %q", r.FormValue("visibility"), "public")
+		}
+		if r.FormValue("texts") != "hello,world" {
+			t.Errorf("texts = %q, want %q", r.FormValue("texts"), "hello,world")
+		}
+		if r.FormValue("tags") != "english,female" {
+			t.Errorf("tags = %q, want %q", r.FormValue("tags"), "english,female")
+		}
+		if r.FormValue("enhance_audio_quality") != "false" {
+			t.Errorf("enhance_audio_quality = %q, want %q", r.FormValue("enhance_audio_quality"), "false")
+		}
+
+		// Check voice file
+		file, header, err := r.FormFile("voices")
+		if err != nil {
+			t.Fatalf("FormFile(voices) error = %v", err)
+		}
+		defer func() { _ = file.Close() }()
+
+		if header.Filename != "voice_0.wav" {
+			t.Errorf("voice filename = %q, want %q", header.Filename, "voice_0.wav")
+		}
+
+		// Check cover image
+		cover, coverHeader, err := r.FormFile("cover_image")
+		if err != nil {
+			t.Fatalf("FormFile(cover_image) error = %v", err)
+		}
+		defer func() { _ = cover.Close() }()
+
+		if coverHeader.Filename != "cover.png" {
+			t.Errorf("cover filename = %q, want %q", coverHeader.Filename, "cover.png")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(Voice{ID: "new-voice", Title: "My Voice"})
+	}))
+	defer server.Close()
+
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
+	voice, err := client.Voices.Create(context.Background(), &CreateVoiceParams{
+		Title:               "My Voice",
+		Description:         "A test voice",
+		Visibility:          VisibilityPublic,
+		Voices:              [][]byte{[]byte("audio data")},
+		Texts:               []string{"hello", "world"},
+		Tags:                []string{"english", "female"},
+		CoverImage:          []byte("image data"),
+		EnhanceAudioQuality: &enhanceQuality,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if voice.ID != "new-voice" {
+		t.Errorf("voice.ID = %q, want %q", voice.ID, "new-voice")
+	}
+}
+
+func TestVoicesService_Create_MultipleVoices(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := r.ParseMultipartForm(10 << 20)
+		if err != nil {
+			t.Fatalf("ParseMultipartForm error = %v", err)
+		}
+
+		// Check multiple voice files
+		files := r.MultipartForm.File["voices"]
+		if len(files) != 2 {
+			t.Fatalf("voices file count = %d, want %d", len(files), 2)
+		}
+		if files[0].Filename != "voice_0.wav" {
+			t.Errorf("voices[0] filename = %q, want %q", files[0].Filename, "voice_0.wav")
+		}
+		if files[1].Filename != "voice_1.wav" {
+			t.Errorf("voices[1] filename = %q, want %q", files[1].Filename, "voice_1.wav")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(Voice{ID: "multi-voice"})
+	}))
+	defer server.Close()
+
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
+	voice, err := client.Voices.Create(context.Background(), &CreateVoiceParams{
+		Title:  "Multi Voice",
+		Voices: [][]byte{[]byte("audio1"), []byte("audio2")},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if voice.ID != "multi-voice" {
+		t.Errorf("voice.ID = %q, want %q", voice.ID, "multi-voice")
+	}
+}
+
+func TestVoicesService_Create_ErrorResponse(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+	}{
+		{"unauthorized", 401},
+		{"rate_limited", 429},
+		{"server_error", 500},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(`{"error": "test"}`))
+			}))
+			defer server.Close()
+
+			client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
+			_, err := client.Voices.Create(context.Background(), &CreateVoiceParams{
+				Title:  "Test",
+				Voices: [][]byte{[]byte("audio")},
+			})
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+		})
+	}
+}
+
+func TestVoicesService_Update_AllFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("Method = %q, want %q", r.Method, http.MethodPatch)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/model/voice-123") {
+			t.Errorf("Path = %q, want suffix %q", r.URL.Path, "/model/voice-123")
+		}
+
+		err := r.ParseMultipartForm(10 << 20)
+		if err != nil {
+			t.Fatalf("ParseMultipartForm error = %v", err)
+		}
+
+		if r.FormValue("title") != "Updated Title" {
+			t.Errorf("title = %q, want %q", r.FormValue("title"), "Updated Title")
+		}
+		if r.FormValue("description") != "Updated desc" {
+			t.Errorf("description = %q, want %q", r.FormValue("description"), "Updated desc")
+		}
+		if r.FormValue("visibility") != "public" {
+			t.Errorf("visibility = %q, want %q", r.FormValue("visibility"), "public")
+		}
+		if r.FormValue("tags") != "tag1,tag2" {
+			t.Errorf("tags = %q, want %q", r.FormValue("tags"), "tag1,tag2")
+		}
+
+		// Check cover image
+		cover, _, err := r.FormFile("cover_image")
+		if err != nil {
+			t.Fatalf("FormFile(cover_image) error = %v", err)
+		}
+		defer func() { _ = cover.Close() }()
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
+	err := client.Voices.Update(context.Background(), "voice-123", &UpdateVoiceParams{
+		Title:       "Updated Title",
+		Description: "Updated desc",
+		Visibility:  VisibilityPublic,
+		Tags:        []string{"tag1", "tag2"},
+		CoverImage:  []byte("new image"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+}
+
+func TestVoicesService_Update_PartialFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := r.ParseMultipartForm(10 << 20)
+		if err != nil {
+			t.Fatalf("ParseMultipartForm error = %v", err)
+		}
+
+		// Only title should be present
+		if r.FormValue("title") != "New Title" {
+			t.Errorf("title = %q, want %q", r.FormValue("title"), "New Title")
+		}
+		// Description should not be present (empty means not set)
+		if r.FormValue("description") != "" {
+			t.Errorf("description = %q, want empty", r.FormValue("description"))
+		}
+		if r.FormValue("visibility") != "" {
+			t.Errorf("visibility = %q, want empty", r.FormValue("visibility"))
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
+	err := client.Voices.Update(context.Background(), "voice-123", &UpdateVoiceParams{
+		Title: "New Title",
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+}
+
+func TestVoicesService_Update_ErrorResponse(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+	}{
+		{"unauthorized", 401},
+		{"rate_limited", 429},
+		{"server_error", 500},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(`{"error": "test"}`))
+			}))
+			defer server.Close()
+
+			client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
+			err := client.Voices.Update(context.Background(), "voice-123", &UpdateVoiceParams{
+				Title: "Test",
+			})
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+		})
+	}
+}

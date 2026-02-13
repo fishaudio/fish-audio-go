@@ -232,3 +232,42 @@ func TestAudioStream_Next_AfterError(t *testing.T) {
 		t.Error("Next() should return false when err is set")
 	}
 }
+
+func TestAudioStream_Next_ReadError(t *testing.T) {
+	resp := &http.Response{
+		Body: &errorReadCloser{err: io.ErrUnexpectedEOF},
+	}
+	stream := newAudioStream(resp)
+
+	if stream.Next() {
+		t.Error("Next() should return false on read error")
+	}
+	if stream.Err() != io.ErrUnexpectedEOF {
+		t.Errorf("Err() = %v, want %v", stream.Err(), io.ErrUnexpectedEOF)
+	}
+}
+
+func TestAudioStream_Collect_ReadError(t *testing.T) {
+	resp := &http.Response{
+		Body: &errorReadCloser{err: io.ErrUnexpectedEOF},
+	}
+	stream := newAudioStream(resp)
+
+	_, err := stream.Collect()
+	if err == nil {
+		t.Fatal("Collect() expected error, got nil")
+	}
+}
+
+// errorReadCloser is a mock that always returns an error on Read.
+type errorReadCloser struct {
+	err error
+}
+
+func (e *errorReadCloser) Read([]byte) (int, error) {
+	return 0, e.err
+}
+
+func (e *errorReadCloser) Close() error {
+	return nil
+}

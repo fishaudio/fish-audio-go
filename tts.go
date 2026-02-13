@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -268,8 +269,8 @@ func (s *TTSService) StreamWebSocket(ctx context.Context, textChan <-chan string
 		params = &StreamParams{}
 	}
 
-	// Build WebSocket URL
-	wsURL := "wss://api.fish.audio/v1/tts/live"
+	// Build WebSocket URL from baseURL
+	wsURL := strings.Replace(strings.Replace(s.client.baseURL, "https://", "wss://", 1), "http://", "ws://", 1) + "/v1/tts/live"
 
 	// Set up dialer
 	dialer := websocket.Dialer{
