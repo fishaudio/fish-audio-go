@@ -54,7 +54,10 @@ const (
 type Model string
 
 const (
+	// Deprecated: Use ModelS1 or ModelS2Pro instead.
 	ModelSpeech15 Model = "speech-1.5"
+	// Deprecated: Use ModelS1 or ModelS2Pro instead.
 	ModelSpeech16 Model = "speech-1.6"
 	ModelS1       Model = "s1"
+	ModelS2Pro    Model = "s2-pro"
 )
