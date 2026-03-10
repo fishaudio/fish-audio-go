@@ -31,7 +31,7 @@ type Prosody struct {
 
 // TTSConfig is reusable configuration for text-to-speech requests.
 type TTSConfig struct {
-	// Model is the TTS model to use. Options: "s1", "speech-1.6", "speech-1.5". Default: "s1".
+	// Model is the TTS model to use. Options: "s2-pro", "s1", "speech-1.6", "speech-1.5". Default: "s2-pro".
 	Model Model `json:"model,omitempty"`
 	// Format is the audio output format. Options: "mp3", "wav", "pcm", "opus". Default: "mp3".
 	Format AudioFormat `json:"format,omitempty"`
@@ -63,7 +63,7 @@ type TTSConfig struct {
 type ConvertParams struct {
 	// Text is the text to synthesize into speech (required).
 	Text string `json:"text"`
-	// Model is the TTS model to use. Options: "s1", "speech-1.6", "speech-1.5". Default: "s1".
+	// Model is the TTS model to use. Options: "s2-pro", "s1", "speech-1.6", "speech-1.5". Default: "s2-pro".
 	Model Model `json:"model,omitempty"`
 	// ReferenceID is the voice model ID to use.
 	ReferenceID string `json:"reference_id,omitempty"`
@@ -83,7 +83,7 @@ type ConvertParams struct {
 type StreamParams struct {
 	// Text is the text to synthesize into speech (required).
 	Text string `json:"text"`
-	// Model is the TTS model to use. Options: "s1", "speech-1.6", "speech-1.5". Default: "s1".
+	// Model is the TTS model to use. Options: "s2-pro", "s1", "speech-1.6", "speech-1.5". Default: "s2-pro".
 	Model Model `json:"-"`
 	// ReferenceID is the voice model ID to use.
 	ReferenceID string `json:"reference_id,omitempty"`
@@ -160,7 +160,7 @@ func (s *TTSService) Stream(ctx context.Context, params *StreamParams) (*AudioSt
 	return newAudioStream(resp), nil
 }
 
-// getModel returns the model to use, checking params then config.
+// getModel returns the model to use, checking params then config, defaulting to s2-pro.
 func (s *TTSService) getModel(params *StreamParams) Model {
 	if params.Model != "" {
 		return params.Model
@@ -168,7 +168,7 @@ func (s *TTSService) getModel(params *StreamParams) Model {
 	if params.Config != nil && params.Config.Model != "" {
 		return params.Config.Model
 	}
-	return ""
+	return ModelS2Pro
 }
 
 // buildRequest constructs the API request from params.
