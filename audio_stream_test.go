@@ -247,6 +247,39 @@ func TestAudioStream_Next_ReadError(t *testing.T) {
 	}
 }
 
+func TestAudioStream_Next_PreservesBytesAndTerminalState(t *testing.T) {
+	for _, readErr := range []error{io.EOF, io.ErrUnexpectedEOF} {
+		t.Run(readErr.Error(), func(t *testing.T) {
+			body := &terminalReadCloser{
+				mockReadCloser: newMockReadCloser([]byte("last chunk")),
+				err:            readErr,
+			}
+			stream := newAudioStream(&http.Response{Body: body})
+			if !stream.Next() {
+				t.Error("Next() stopped before yielding the final bytes")
+			} else if string(stream.Bytes()) != "last chunk" {
+				t.Errorf("Bytes() = %q, want %q", stream.Bytes(), "last chunk")
+			}
+			if stream.Next() {
+				t.Error("Next() should stop after the terminal read")
+			}
+			var wantErr error
+			if readErr != io.EOF {
+				wantErr = readErr
+			}
+			if stream.Err() != wantErr {
+				t.Errorf("Err() = %v, want %v", stream.Err(), wantErr)
+			}
+			if err := stream.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+			if !body.closed {
+				t.Error("Close() did not close the HTTP response body")
+			}
+		})
+	}
+}
+
 func TestAudioStream_Collect_ReadError(t *testing.T) {
 	resp := &http.Response{
 		Body: &errorReadCloser{err: io.ErrUnexpectedEOF},
@@ -257,6 +290,20 @@ func TestAudioStream_Collect_ReadError(t *testing.T) {
 	if err == nil {
 		t.Fatal("Collect() expected error, got nil")
 	}
+}
+
+// A Reader can return its final bytes and terminal error from the same read.
+type terminalReadCloser struct {
+	*mockReadCloser
+	err error
+}
+
+func (body *terminalReadCloser) Read(p []byte) (int, error) {
+	n, err := body.mockReadCloser.Read(p)
+	if body.Len() == 0 {
+		return n, body.err
+	}
+	return n, err
 }
 
 // errorReadCloser is a mock that always returns an error on Read.

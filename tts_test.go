@@ -289,6 +289,33 @@ func TestTTSService_Stream(t *testing.T) {
 	}
 }
 
+func TestTTSService_StreamIteratesThroughFinalChunk(t *testing.T) {
+	audioData := []byte("complete audio response")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		_, _ = w.Write(audioData)
+	}))
+	defer server.Close()
+
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
+	stream, err := client.TTS.Stream(context.Background(), &StreamParams{Text: "Hello"})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	var received bytes.Buffer
+	for stream.Next() {
+		received.Write(stream.Bytes())
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("Err() = %v, want nil", err)
+	}
+	if !bytes.Equal(received.Bytes(), audioData) {
+		t.Errorf("received = %q, want %q", received.Bytes(), audioData)
+	}
+}
+
 func TestTTSService_Convert(t *testing.T) {
 	audioData := []byte("fake audio data for convert")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

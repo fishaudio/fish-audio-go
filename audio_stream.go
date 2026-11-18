@@ -33,6 +33,7 @@ type AudioStream struct {
 	buf       []byte
 	chunkSize int
 	err       error
+	eof       bool
 	closed    bool
 }
 
@@ -45,25 +46,22 @@ func newAudioStream(resp *http.Response) *AudioStream {
 }
 
 // Next advances to the next chunk of audio data.
-// It returns false when there are no more chunks or an error occurred.
+// A read can provide a final chunk and a terminal error together. Check Err after iteration.
 func (s *AudioStream) Next() bool {
-	if s.closed || s.err != nil {
+	if s.closed || s.eof || s.err != nil {
 		return false
 	}
 
 	s.buf = make([]byte, s.chunkSize)
 	n, err := s.resp.Body.Read(s.buf)
-	if err != nil {
-		if err == io.EOF {
-			s.closed = true
-			return false
-		}
+	if err == io.EOF {
+		s.eof = true
+	} else if err != nil {
 		s.err = err
-		return false
 	}
 
 	s.buf = s.buf[:n]
-	return true
+	return n > 0 || err == nil
 }
 
 // Bytes returns the current chunk of audio data.
@@ -105,7 +103,7 @@ func (s *AudioStream) Close() error {
 
 // Read implements io.Reader interface.
 func (s *AudioStream) Read(p []byte) (n int, err error) {
-	if s.closed {
+	if s.closed || s.eof {
 		return 0, io.EOF
 	}
 	return s.resp.Body.Read(p)
