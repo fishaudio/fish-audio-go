@@ -280,3 +280,35 @@ func TestASRService_Transcribe_ContextCancellation(t *testing.T) {
 func boolPtr(b bool) *bool {
 	return &b
 }
+
+func TestASRService_Transcribe_Model(t *testing.T) {
+	tests := []struct {
+		name   string
+		params *TranscribeParams
+		want   []string // values of the model header; nil when it must be absent
+	}{
+		{"nil params sends no model header", nil, nil},
+		{"empty model sends no model header", &TranscribeParams{Language: "en"}, nil},
+		{"model is sent as header", &TranscribeParams{Model: ASRModelTranscribe1Pro}, []string{"transcribe-1-pro"}},
+		{"custom model string", &TranscribeParams{Model: "some-future-model"}, []string{"some-future-model"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.Header.Values("model")
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(ASRResponse{Text: "ok"})
+			}))
+			defer server.Close()
+
+			client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
+			if _, err := client.ASR.Transcribe(context.Background(), []byte("fake audio"), tt.params); err != nil {
+				t.Fatalf("Transcribe() error = %v", err)
+			}
+			if len(got) != len(tt.want) || (len(got) > 0 && got[0] != tt.want[0]) {
+				t.Errorf("model header = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
