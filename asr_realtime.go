@@ -134,6 +134,16 @@ func (s *ASRService) StreamWebSocket(ctx context.Context, audio <-chan []byte, p
 		return nil, &WebSocketError{Message: "failed to send config: " + err.Error(), Err: err}
 	}
 
+	// Watched on its own, not by the goroutine that writes: a write can be
+	// stuck on a peer that stopped reading, and aborting closes the
+	// connection, which is what releases it.
+	stopWatchingCtx := context.AfterFunc(ctx, func() {
+		stream.abort(context.Cause(ctx))
+	})
+	stream.mu.Lock()
+	stream.stopWatchingCtx = stopWatchingCtx
+	stream.mu.Unlock()
+
 	stream.wg.Add(1)
 	go stream.readLoop()
 
@@ -146,14 +156,10 @@ func (s *ASRService) StreamWebSocket(ctx context.Context, audio <-chan []byte, p
 			return nil, err
 		}
 		return nil, &WebSocketError{Message: "websocket closed before the session started"}
-	case <-ctx.Done():
-		stream.abort(context.Cause(ctx))
-		stream.wg.Wait()
-		return nil, stream.Err()
 	}
 
 	stream.wg.Add(1)
-	go stream.sendLoop(ctx, audio, opts.PingInterval)
+	go stream.sendLoop(audio, opts.PingInterval)
 
 	return stream, nil
 }
@@ -194,9 +200,12 @@ type ASRRealtimeStream struct {
 
 	wg sync.WaitGroup
 
-	mu      sync.Mutex
-	err     error
-	current ASREvent
+	mu sync.Mutex
+	// stopWatchingCtx releases the watch on ctx once the session has ended.
+	// It is nil if ctx was canceled before the watch was recorded.
+	stopWatchingCtx func() bool
+	err             error
+	current         ASREvent
 }
 
 // Next advances to the next event. It returns false when the session has
@@ -362,8 +371,12 @@ func (s *ASRRealtimeStream) finish(err error) {
 	s.doneOnce.Do(func() {
 		s.mu.Lock()
 		s.err = err
+		stopWatchingCtx := s.stopWatchingCtx
 		s.mu.Unlock()
 		close(s.done)
+		if stopWatchingCtx != nil {
+			stopWatchingCtx()
+		}
 		// Best effort, and bounded: the peer may have stopped reading.
 		_ = s.conn.WriteControl(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
@@ -483,9 +496,9 @@ func asrCloseError(err error, lastError *ASRErrorEvent, fatal bool) error {
 }
 
 // sendLoop writes every data frame of the session: audio until the channel is
-// closed, and control messages. It also watches ctx and sends pings, until
-// the session ends.
-func (s *ASRRealtimeStream) sendLoop(ctx context.Context, audio <-chan []byte, pingInterval time.Duration) {
+// closed, and control messages. It also sends pings, until the session ends.
+// It does not watch ctx: it can be stuck in a write when ctx is canceled.
+func (s *ASRRealtimeStream) sendLoop(audio <-chan []byte, pingInterval time.Duration) {
 	defer s.wg.Done()
 
 	var ping <-chan time.Time
@@ -498,9 +511,6 @@ func (s *ASRRealtimeStream) sendLoop(ctx context.Context, audio <-chan []byte, p
 	for {
 		select {
 		case <-s.done:
-			return
-		case <-ctx.Done():
-			s.abort(context.Cause(ctx))
 			return
 		case <-ping:
 			// Fails only on a broken connection, which readLoop reports.

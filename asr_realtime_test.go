@@ -1168,6 +1168,82 @@ func TestASRRealtime_CloseWhileSendIsBlocked(t *testing.T) {
 	assertNoASRGoroutines(t)
 }
 
+// Canceling ctx ends the session even while a send is stuck on a server that
+// stopped reading: the writer cannot be the one that watches ctx.
+func TestASRRealtime_CancelWhileSendIsBlocked(t *testing.T) {
+	errMicrophone := errors.New("microphone unplugged")
+	release := make(chan struct{})
+	f := newFakeASRServer(t, func(c *fakeASRConn) {
+		if c.start() != nil {
+			<-release // never reads again
+		}
+	})
+	defer close(release)
+
+	ctx, fail := context.WithCancelCause(context.Background())
+	defer fail(nil)
+	audio := make(chan []byte)
+	stream, err := f.client().ASR.StreamWebSocket(ctx, audio, nil, nil)
+	if err != nil {
+		t.Fatalf("StreamWebSocket() error = %v", err)
+	}
+	if !stream.Next() {
+		t.Fatalf("no session_started: %v", stream.Err())
+	}
+
+	stop := make(chan struct{})
+	var pushed atomic.Int64
+	go func() {
+		chunk := make([]byte, 256<<10)
+		for {
+			select {
+			case audio <- chunk:
+				pushed.Add(1)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	defer close(stop)
+
+	// Wait until the socket is full and the sender is stuck in a write.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		before := pushed.Load()
+		time.Sleep(200 * time.Millisecond)
+		if pushed.Load() == before && before > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the sender never stalled")
+		}
+	}
+
+	// A control message queued behind the stuck write is released too.
+	control := make(chan error, 1)
+	go func() { control <- stream.Keepalive() }()
+	time.Sleep(50 * time.Millisecond)
+
+	fail(errMicrophone)
+	within(t, 2*time.Second, "Next after ctx is canceled during a blocked send", func() {
+		if stream.Next() {
+			t.Error("Next() = true")
+		}
+	})
+	if err := stream.Err(); !errors.Is(err, errMicrophone) {
+		t.Errorf("Err() = %v, want the cancellation cause", err)
+	}
+	select {
+	case err := <-control:
+		if err == nil {
+			t.Error("Keepalive() = nil for a message that was never sent")
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("Keepalive() is still blocked after ctx was canceled")
+	}
+	assertNoASRGoroutines(t) // without Close
+}
+
 func TestASRRealtime_EarlyClose(t *testing.T) {
 	serverSawClose := make(chan bool, 1)
 	f := newFakeASRServer(t, func(c *fakeASRConn) {
