@@ -1,6 +1,6 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/fishaudio/fish-audio-go/refs/heads/main/.github/assets/banner-dark.svg">
-  <img alt="Fish Audio Go SDK" src="https://raw.githubusercontent.com/fishaudio/fish-audio-go/refs/heads/main/.github/assets/banner-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/fishaudio/fish-audio-go/refs/heads/main/.github/assets/banner-dark.svg" />
+  <img alt="Fish Audio Go SDK" src="https://raw.githubusercontent.com/fishaudio/fish-audio-go/refs/heads/main/.github/assets/banner-light.svg" />
 </picture>
 
 # Fish Audio Go SDK
