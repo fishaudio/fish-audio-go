@@ -76,6 +76,7 @@ func mustStream(t *testing.T, f *fakeASRServer, ctx context.Context, audio <-cha
 // Normal flow and wire format.
 
 func TestASRRealtime_BasicFlow(t *testing.T) {
+	asrTestDeadline(t)
 	f := newFakeASRServer(t, func(c *fakeASRConn) { c.serve(nil) })
 
 	stream := mustStream(t, f, context.Background(), audioOf(pcm(40), pcm(40), pcm(40)), nil)
@@ -122,6 +123,7 @@ func TestASRRealtime_BasicFlow(t *testing.T) {
 }
 
 func TestASRRealtime_ModelHeader(t *testing.T) {
+	asrTestDeadline(t)
 	f := newFakeASRServer(t, func(c *fakeASRConn) { c.serve(nil) })
 	stream := mustStream(t, f, context.Background(), audioOf(), &ASRRealtimeParams{Model: "transcribe-1-pro-realtime"})
 	collect(t, stream)
@@ -131,6 +133,7 @@ func TestASRRealtime_ModelHeader(t *testing.T) {
 }
 
 func TestASRRealtime_ConfigMessage(t *testing.T) {
+	asrTestDeadline(t)
 	tests := []struct {
 		name   string
 		params *ASRRealtimeParams
@@ -236,6 +239,7 @@ func normalize(v interface{}) msg {
 }
 
 func TestASRRealtime_AudioIsMsgpackBin(t *testing.T) {
+	asrTestDeadline(t)
 	var (
 		mu     sync.Mutex
 		frames [][]byte
@@ -282,6 +286,7 @@ func TestASRRealtime_AudioIsMsgpackBin(t *testing.T) {
 }
 
 func TestASRRealtime_AudioWaitsForSessionStarted(t *testing.T) {
+	asrTestDeadline(t)
 	early := make(chan string, 1)
 	f := newFakeASRServer(t, func(c *fakeASRConn) {
 		config, _, ok := c.recv()
@@ -311,6 +316,7 @@ func TestASRRealtime_AudioWaitsForSessionStarted(t *testing.T) {
 }
 
 func TestASRRealtime_ControlMessages(t *testing.T) {
+	asrTestDeadline(t)
 	var (
 		mu  sync.Mutex
 		got []msg
@@ -414,6 +420,7 @@ func TestASRRealtime_ControlMessages(t *testing.T) {
 // Decoding.
 
 func TestASRRealtime_DecodesEveryEvent(t *testing.T) {
+	asrTestDeadline(t)
 	messages := []msg{
 		{"type": "speech_start", "turn_index": 2, "audio_ms": 300},
 		{"type": "user_turn_taken", "turn_index": 2, "audio_ms": 1280},
@@ -490,6 +497,7 @@ func TestASRRealtime_DecodesEveryEvent(t *testing.T) {
 
 // Lesson 6: unknown server message types are skipped, not errors.
 func TestASRRealtime_SkipsUnknownMessages(t *testing.T) {
+	asrTestDeadline(t)
 	f := newFakeASRServer(t, func(c *fakeASRConn) {
 		if c.start() == nil {
 			return
@@ -515,6 +523,7 @@ func TestASRRealtime_SkipsUnknownMessages(t *testing.T) {
 // Lesson 7: errors.
 
 func TestASRRealtime_HandshakeRejected(t *testing.T) {
+	asrTestDeadline(t)
 	tests := []struct {
 		status int
 		check  func(err error) bool
@@ -565,6 +574,7 @@ func TestASRRealtime_HandshakeRejected(t *testing.T) {
 }
 
 func TestASRRealtime_InvalidConfigIsReturnedByStreamWebSocket(t *testing.T) {
+	asrTestDeadline(t)
 	f := newFakeASRServer(t, func(c *fakeASRConn) { c.serve(nil) })
 
 	stream, err := f.client().ASR.StreamWebSocket(context.Background(), audioOf(pcm(40)), &ASRRealtimeParams{SampleRate: 11025}, nil)
@@ -587,6 +597,7 @@ func TestASRRealtime_InvalidConfigIsReturnedByStreamWebSocket(t *testing.T) {
 }
 
 func TestASRRealtime_FatalErrorEvent(t *testing.T) {
+	asrTestDeadline(t)
 	f := newFakeASRServer(t, func(c *fakeASRConn) {
 		if c.start() == nil {
 			return
@@ -618,6 +629,7 @@ func TestASRRealtime_FatalErrorEvent(t *testing.T) {
 
 // A fatal error is reported even when the server never closes the connection.
 func TestASRRealtime_FatalErrorWithoutClose(t *testing.T) {
+	asrTestDeadline(t)
 	shortGrace(t)
 	f := newFakeASRServer(t, func(c *fakeASRConn) {
 		if c.start() == nil {
@@ -641,6 +653,7 @@ func TestASRRealtime_FatalErrorWithoutClose(t *testing.T) {
 }
 
 func TestASRRealtime_RecoverableErrorIsAnEvent(t *testing.T) {
+	asrTestDeadline(t)
 	f := newFakeASRServer(t, func(c *fakeASRConn) {
 		if c.start() == nil {
 			return
@@ -666,6 +679,7 @@ func TestASRRealtime_RecoverableErrorIsAnEvent(t *testing.T) {
 }
 
 func TestASRRealtime_AbnormalClose(t *testing.T) {
+	asrTestDeadline(t)
 	tests := []struct {
 		name   string
 		script func(c *fakeASRConn)
@@ -739,6 +753,7 @@ func TestASRRealtime_AbnormalClose(t *testing.T) {
 
 // Lesson 1: a network failure while the session opens is an SDK error.
 func TestASRRealtime_ConnectionFailuresAreSDKErrors(t *testing.T) {
+	asrTestDeadline(t)
 	isSDKError := func(err error) bool {
 		var sdkErr FishAudioError
 		return errors.As(err, &sdkErr)
@@ -813,6 +828,7 @@ func TestASRRealtime_ConnectionFailuresAreSDKErrors(t *testing.T) {
 
 // Lesson 5: the connection is closed by the time session_done is handed out.
 func TestASRRealtime_ConnectionClosedAtSessionDone(t *testing.T) {
+	asrTestDeadline(t)
 	closedByClient := make(chan bool, 1)
 	f := newFakeASRServer(t, func(c *fakeASRConn) {
 		if c.start() == nil {
@@ -872,6 +888,7 @@ func TestASRRealtime_ConnectionClosedAtSessionDone(t *testing.T) {
 
 // Lesson 2: Close wakes a consumer that is waiting for the next event.
 func TestASRRealtime_CloseWakesBlockedNext(t *testing.T) {
+	asrTestDeadline(t)
 	serverSawClose := make(chan bool, 1)
 	f := newFakeASRServer(t, func(c *fakeASRConn) {
 		if c.start() == nil {
@@ -943,6 +960,7 @@ func floodServer(t *testing.T, sent *atomic.Int64, textSize int) *fakeASRServer 
 // error) the session ends with that error, even while the server keeps
 // sending events.
 func TestASRRealtime_AudioSourceFailureEndsSession(t *testing.T) {
+	asrTestDeadline(t)
 	errMicrophone := errors.New("microphone unplugged")
 
 	t.Run("consumer reading a busy stream", func(t *testing.T) {
@@ -1056,6 +1074,7 @@ func TestASRRealtime_AudioSourceFailureEndsSession(t *testing.T) {
 
 // A session that ended normally is not turned into a failure by a later cancel.
 func TestASRRealtime_CancelAfterNormalEnd(t *testing.T) {
+	asrTestDeadline(t)
 	f := newFakeASRServer(t, func(c *fakeASRConn) { c.serve(nil) })
 	ctx, cancel := context.WithCancel(context.Background())
 	stream := mustStream(t, f, ctx, audioOf(pcm(40)), nil)
@@ -1073,6 +1092,7 @@ func TestASRRealtime_CancelAfterNormalEnd(t *testing.T) {
 // Lesson 4: a slow consumer gets backpressure, not an unbounded buffer, and
 // Close does not hang on the full buffer.
 func TestASRRealtime_BackpressureAndCloseWithFullBuffer(t *testing.T) {
+	asrTestDeadline(t)
 	var sent atomic.Int64
 	f := floodServer(t, &sent, 16<<10) // 16 KiB per event
 	stream, err := f.client().ASR.StreamWebSocket(context.Background(), make(chan []byte), nil, nil)
@@ -1124,6 +1144,7 @@ func TestASRRealtime_BackpressureAndCloseWithFullBuffer(t *testing.T) {
 
 // Close also returns while a send is stuck on a server that stopped reading.
 func TestASRRealtime_CloseWhileSendIsBlocked(t *testing.T) {
+	asrTestDeadline(t)
 	release := make(chan struct{})
 	f := newFakeASRServer(t, func(c *fakeASRConn) {
 		if c.start() != nil {
@@ -1172,90 +1193,133 @@ func TestASRRealtime_CloseWhileSendIsBlocked(t *testing.T) {
 // every later one: the dial deadline is gone once the upgrade has succeeded,
 // so a peer that stops reading right after it must not hang StreamWebSocket.
 func TestASRRealtime_CancelWhileConfigWriteIsBlocked(t *testing.T) {
+	asrTestDeadline(t)
 	errMicrophone := errors.New("microphone unplugged")
+	// Each ctx ends only after the server has upgraded the connection, so
+	// that it ends during the config write and not before it: encoding the
+	// config below and dialing can take longer than any fixed delay on a slow
+	// machine. A deadline cannot wait for the server, so that case is
+	// repeated with a longer one until the write was reached.
+	cancelAfterUpgrade := func(upgraded <-chan struct{}, cancel func()) {
+		go func() {
+			<-upgraded
+			time.Sleep(100 * time.Millisecond)
+			cancel()
+		}()
+	}
 	tests := []struct {
-		name string
-		ctx  func() (context.Context, func())
-		want []error
+		name     string
+		ctx      func(upgraded <-chan struct{}, d time.Duration) (context.Context, func())
+		attempts []time.Duration
+		want     []error
 	}{
 		{
 			name: "canceled",
-			ctx: func() (context.Context, func()) {
+			ctx: func(upgraded <-chan struct{}, _ time.Duration) (context.Context, func()) {
 				ctx, cancel := context.WithCancel(context.Background())
-				time.AfterFunc(100*time.Millisecond, cancel)
+				cancelAfterUpgrade(upgraded, cancel)
 				return ctx, cancel
 			},
-			want: []error{context.Canceled},
+			attempts: []time.Duration{0},
+			want:     []error{context.Canceled},
 		},
 		{
 			name: "canceled with a cause",
-			ctx: func() (context.Context, func()) {
+			ctx: func(upgraded <-chan struct{}, _ time.Duration) (context.Context, func()) {
 				ctx, cancel := context.WithCancelCause(context.Background())
-				time.AfterFunc(100*time.Millisecond, func() { cancel(errMicrophone) })
+				cancelAfterUpgrade(upgraded, func() { cancel(errMicrophone) })
 				return ctx, func() { cancel(nil) }
 			},
-			want: []error{context.Canceled, errMicrophone},
+			attempts: []time.Duration{0},
+			want:     []error{context.Canceled, errMicrophone},
 		},
 		{
 			name: "deadline exceeded",
-			ctx: func() (context.Context, func()) {
-				return context.WithTimeout(context.Background(), 100*time.Millisecond)
+			ctx: func(_ <-chan struct{}, d time.Duration) (context.Context, func()) {
+				return context.WithTimeout(context.Background(), d)
 			},
-			want: []error{context.DeadlineExceeded},
+			attempts: []time.Duration{300 * time.Millisecond, time.Second, 4 * time.Second},
+			want:     []error{context.DeadlineExceeded},
 		},
 	}
 	// Far more than the socket buffers of both ends hold, so the write of
 	// the config blocks on a server that does not read.
 	params := &ASRRealtimeParams{Context: &ASRContext{Terms: []string{strings.Repeat("x", 64<<20)}}}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			returned := make(chan struct{})
-			closedByClient := make(chan bool, 1)
-			f := newFakeASRServer(t, func(c *fakeASRConn) {
-				<-returned // the upgrade is done; reads nothing until the client gave up
-				closedByClient <- c.waitClosed(5 * time.Second)
-			})
+	type result struct {
+		stream *ASRRealtimeStream
+		err    error
+	}
+	// attempt reports whether ctx ended after the upgrade, which is the case
+	// under test.
+	attempt := func(t *testing.T, newCtx func(<-chan struct{}, time.Duration) (context.Context, func()), d time.Duration, want []error) bool {
+		upgraded := make(chan struct{})
+		returned := make(chan struct{})
+		closedByClient := make(chan bool, 1)
+		f := newFakeASRServer(t, func(c *fakeASRConn) {
+			close(upgraded)
+			<-returned // reads nothing until the client gave up
+			closedByClient <- c.waitClosed(5 * time.Second)
+		})
+		defer f.Close()
 
-			ctx, cancel := tt.ctx()
-			defer cancel()
-			type result struct {
-				stream *ASRRealtimeStream
-				err    error
-			}
-			start := time.Now()
-			finished := make(chan result, 1)
-			go func() {
-				stream, err := f.client().ASR.StreamWebSocket(ctx, make(chan []byte), params, nil)
-				finished <- result{stream, err}
-			}()
-			var (
-				stream *ASRRealtimeStream
-				err    error
-			)
+		ctx, cancel := newCtx(upgraded, d)
+		defer cancel()
+		finished := make(chan result, 1)
+		go func() {
+			stream, err := f.client().ASR.StreamWebSocket(ctx, make(chan []byte), params, nil)
+			finished <- result{stream, err}
+		}()
+		var r result
+		select {
+		case r = <-finished:
+		case <-ctx.Done():
+			ended := time.Now()
 			select {
-			case r := <-finished:
-				stream, err = r.stream, r.err
+			case r = <-finished:
+				t.Logf("returned %v after ctx ended", time.Since(ended))
 			case <-time.After(3 * time.Second):
 				close(returned)
-				t.Fatal("StreamWebSocket is still blocked in the config write 3s after ctx ended")
+				t.Fatal("StreamWebSocket is still blocked 3s after ctx ended")
 			}
-			close(returned)
-			t.Logf("returned after %v", time.Since(start))
+		}
+		close(returned)
 
-			if err == nil {
-				_ = stream.Close()
-				t.Fatal("StreamWebSocket() error = nil")
+		if r.err == nil {
+			_ = r.stream.Close()
+			t.Fatal("StreamWebSocket() error = nil")
+		}
+		for _, w := range want {
+			if !errors.Is(r.err, w) {
+				t.Errorf("error = %v, want errors.Is(err, %v)", r.err, w)
 			}
-			for _, want := range tt.want {
-				if !errors.Is(err, want) {
-					t.Errorf("error = %v, want errors.Is(err, %v)", err, want)
-				}
-			}
-			if !<-closedByClient {
+		}
+		select {
+		case <-upgraded:
+		default:
+			return false // ctx ended before the connection was up
+		}
+		select {
+		case closed := <-closedByClient:
+			if !closed {
 				t.Error("the client left the connection open")
 			}
-			assertNoASRGoroutines(t)
+		case <-time.After(10 * time.Second):
+			t.Error("the server never saw the end of the connection")
+		}
+		assertNoASRGoroutines(t)
+		return true
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, d := range tt.attempts {
+				if attempt(t, tt.ctx, d, tt.want) {
+					return
+				}
+				t.Logf("ctx ended before the config write (deadline %v)", d)
+			}
+			t.Fatal("ctx always ended before the config write was reached")
 		})
 	}
 }
@@ -1263,6 +1327,7 @@ func TestASRRealtime_CancelWhileConfigWriteIsBlocked(t *testing.T) {
 // The same for the upgrade itself: a server that accepts the connection and
 // never answers.
 func TestASRRealtime_CancelDuringHandshake(t *testing.T) {
+	asrTestDeadline(t)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -1305,8 +1370,15 @@ func TestASRRealtime_CancelDuringHandshake(t *testing.T) {
 		// The goroutine above serves the first connection only. The second
 		// one stays in the listener's backlog, which stalls the upgrade just
 		// the same.
-		if want == context.Canceled && !<-closedByClient {
-			t.Error("the client left the connection open")
+		if want == context.Canceled {
+			select {
+			case closed := <-closedByClient:
+				if !closed {
+					t.Error("the client left the connection open")
+				}
+			case <-time.After(10 * time.Second):
+				t.Error("the server never saw the end of the connection")
+			}
 		}
 	}
 	assertNoASRGoroutines(t)
@@ -1315,6 +1387,7 @@ func TestASRRealtime_CancelDuringHandshake(t *testing.T) {
 // Canceling ctx ends the session even while a send is stuck on a server that
 // stopped reading: the writer cannot be the one that watches ctx.
 func TestASRRealtime_CancelWhileSendIsBlocked(t *testing.T) {
+	asrTestDeadline(t)
 	errMicrophone := errors.New("microphone unplugged")
 	release := make(chan struct{})
 	f := newFakeASRServer(t, func(c *fakeASRConn) {
@@ -1389,6 +1462,7 @@ func TestASRRealtime_CancelWhileSendIsBlocked(t *testing.T) {
 }
 
 func TestASRRealtime_EarlyClose(t *testing.T) {
+	asrTestDeadline(t)
 	serverSawClose := make(chan bool, 1)
 	f := newFakeASRServer(t, func(c *fakeASRConn) {
 		if c.start() == nil {
@@ -1425,6 +1499,7 @@ func TestASRRealtime_EarlyClose(t *testing.T) {
 }
 
 func TestASRRealtime_Ping(t *testing.T) {
+	asrTestDeadline(t)
 	var pings atomic.Int64
 	f := newFakeASRServer(t, func(c *fakeASRConn) {
 		c.conn.SetPingHandler(func(data string) error {

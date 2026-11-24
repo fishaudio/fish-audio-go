@@ -308,6 +308,26 @@ func assertNoASRGoroutines(t *testing.T) {
 	}
 }
 
+// asrTestTimeout is far above what any of these tests takes (the slowest
+// needs a few seconds under the race detector).
+const asrTestTimeout = 30 * time.Second
+
+// asrTestDeadline bounds a test that waits on sockets and goroutines: if it
+// is still running after asrTestTimeout, the test binary stops with the
+// test's name and every goroutine's stack, instead of sitting there until
+// go test's own timeout (10 minutes by default). Call it first, so that its
+// cleanup runs last and the test's other cleanups are covered too.
+func asrTestDeadline(t *testing.T) {
+	t.Helper()
+	name := t.Name()
+	timer := time.AfterFunc(asrTestTimeout, func() {
+		buf := make([]byte, 1<<20)
+		buf = buf[:runtime.Stack(buf, true)]
+		panic(fmt.Sprintf("%s is still running after %v; goroutines:\n\n%s", name, asrTestTimeout, buf))
+	})
+	t.Cleanup(func() { timer.Stop() })
+}
+
 // within fails the test if fn does not return within d.
 func within(t *testing.T, d time.Duration, what string, fn func()) {
 	t.Helper()
