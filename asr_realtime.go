@@ -68,10 +68,13 @@ var (
 // params.Results.Diarize is Bool(false).
 //
 // Canceling ctx, or reaching its deadline, ends the session at once, at any
-// point from the dial on. The error, returned here or by Err, matches
-// ctx.Err() with errors.Is, and context.Cause(ctx) too: to end a session
-// because the audio source failed, cancel ctx with that error
-// (context.WithCancelCause).
+// point from the dial on. The error, returned here or by Err, then matches
+// context.Canceled or context.DeadlineExceeded with errors.Is, and
+// context.Cause(ctx) too: to end a session because the audio source failed,
+// cancel ctx with that error (context.WithCancelCause). This holds whichever
+// way the end of ctx surfaced, including a connection timeout at ctx's
+// deadline during the dial; that error stays reachable with errors.As. A
+// session that had already ended keeps its own result.
 //
 // With the default options the SDK sends a WebSocket ping every 20 seconds,
 // which the server counts as activity: a session stays open, and billed, while
@@ -143,11 +146,7 @@ func (s *ASRService) StreamWebSocket(ctx context.Context, audio <-chan []byte, p
 			_ = resp.Body.Close()
 			return nil, newAPIError(resp.StatusCode, resp.Status, string(body))
 		}
-		if ctxErr := asrContextError(ctx); ctxErr != nil && !errors.Is(err, ctx.Err()) {
-			// The dialer reports a canceled upgrade as the I/O error of the
-			// connection it closed: keep ctx's error reachable.
-			err = fmt.Errorf("%w: %w", ctxErr, err)
-		}
+		err = asrStartupError(ctx, err)
 		return nil, &WebSocketError{Message: "websocket dial failed: " + err.Error(), Err: err}
 	}
 	conn.SetReadLimit(opts.MaxMessageSize)
@@ -517,6 +516,31 @@ func asrContextError(ctx context.Context) error {
 		return cause
 	}
 	return fmt.Errorf("%w: %w", err, cause)
+}
+
+// asrStartupError relates a failed dial or upgrade to ctx. If ctx ended it,
+// the result matches ctx.Err() and context.Cause(ctx) with errors.Is, and err
+// stays reachable.
+//
+// The dialer reports a canceled upgrade as the I/O error of the connection
+// that was closed for it. It also puts ctx's deadline on the connection, whose
+// timer can fire before ctx's own: the upgrade then fails with a net timeout
+// while ctx.Err() is still nil. A timeout at or after ctx's deadline is
+// therefore ctx's deadline, whichever of the two reported it.
+func asrStartupError(ctx context.Context, err error) error {
+	ctxErr := asrContextError(ctx)
+	if ctxErr == nil {
+		deadline, ok := ctx.Deadline()
+		var netErr net.Error
+		if !ok || time.Now().Before(deadline) || !errors.As(err, &netErr) || !netErr.Timeout() {
+			return err
+		}
+		ctxErr = context.DeadlineExceeded
+	}
+	if errors.Is(err, ctxErr) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ctxErr, err)
 }
 
 // asrCloseError turns the error that ended reading into the session's error:

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -1382,6 +1383,95 @@ func TestASRRealtime_CancelDuringHandshake(t *testing.T) {
 		}
 	}
 	assertNoASRGoroutines(t)
+}
+
+// lateContext is a ctx whose deadline has passed but which is not done yet:
+// what a caller's ctx looks like in the instant between its deadline and its
+// timer firing. Deadline is the embedded ctx's own; Done and Err stay open.
+type lateContext struct {
+	context.Context
+	open context.Context
+}
+
+func (c lateContext) Done() <-chan struct{} { return c.open.Done() }
+func (c lateContext) Err() error            { return c.open.Err() }
+
+// The dialer puts ctx's deadline on the connection, so a stalled upgrade can
+// fail with the connection's own "i/o timeout" before ctx reports that it is
+// done. Which of the two comes first is a race; the caller must get an error
+// matching context.DeadlineExceeded either way. lateContext forces the side
+// of the race where the connection is first.
+func TestASRRealtime_DeadlineReportedByTheConnection(t *testing.T) {
+	asrTestDeadline(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }() // accepts in its backlog, never answers
+
+	withDeadline, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	ctx := lateContext{Context: withDeadline, open: context.Background()}
+
+	client := NewClient(WithAPIKey("k"), WithBaseURL("http://"+listener.Addr().String()))
+	within(t, 3*time.Second, "StreamWebSocket during a stalled handshake", func() {
+		_, err = client.ASR.StreamWebSocket(ctx, make(chan []byte), nil, nil)
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error = %T (%v), want errors.Is(err, context.DeadlineExceeded)", err, err)
+	}
+	var wsErr *WebSocketError
+	if !errors.As(err, &wsErr) {
+		t.Errorf("error = %T, want a *WebSocketError", err)
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Errorf("error = %v, want the connection's timeout to stay reachable", err)
+	}
+	assertNoASRGoroutines(t)
+}
+
+// notDueDone returns a ctx that has reached its deadline.
+func notDueDone() context.Context {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	cancel()
+	return ctx
+}
+
+// A timeout that is not ctx's is not reported as ctx's.
+func TestASRStartupError(t *testing.T) {
+	timeout := &net.OpError{Op: "read", Err: os.ErrDeadlineExceeded}
+	notDue, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	for name, ctx := range map[string]context.Context{"no deadline": context.Background(), "deadline not reached": notDue} {
+		if err := asrStartupError(ctx, timeout); err != error(timeout) {
+			t.Errorf("%s: error = %v, want it unchanged", name, err)
+		}
+	}
+	past, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	refused := errors.New("connection refused")
+	if err := asrStartupError(lateContext{Context: past, open: context.Background()}, refused); err != refused {
+		t.Errorf("not a timeout: error = %v, want it unchanged", err)
+	}
+	errMicrophone := errors.New("microphone unplugged")
+	failed, fail := context.WithCancelCause(context.Background())
+	fail(errMicrophone)
+	err := asrStartupError(failed, refused)
+	for _, want := range []error{context.Canceled, errMicrophone, refused} {
+		if !errors.Is(err, want) {
+			t.Errorf("canceled with a cause: error = %v, want errors.Is(err, %v)", err, want)
+		}
+	}
+	err = asrStartupError(failed, context.Canceled)
+	for _, want := range []error{context.Canceled, errMicrophone} {
+		if !errors.Is(err, want) {
+			t.Errorf("dialer returned ctx.Err(): error = %v, want errors.Is(err, %v)", err, want)
+		}
+	}
+	if err := asrStartupError(notDueDone(), context.DeadlineExceeded); err != context.DeadlineExceeded {
+		t.Errorf("error = %v, want context.DeadlineExceeded as it is", err)
+	}
 }
 
 // Canceling ctx ends the session even while a send is stuck on a server that
