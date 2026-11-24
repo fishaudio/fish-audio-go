@@ -223,7 +223,8 @@ type ASRRealtimeStream struct {
 	// frames, so that they keep their place among the audio chunks.
 	control chan asrControl
 
-	// events is written and closed by readLoop only.
+	// events is written and closed by readLoop only. It holds every event
+	// but session_done, which is kept in last.
 	events chan ASREvent
 	// started is closed when session_started arrives.
 	started chan struct{}
@@ -244,6 +245,10 @@ type ASRRealtimeStream struct {
 	stopWatchingCtx func() bool
 	err             error
 	current         ASREvent
+	// last is the session_done event, delivered by Next once events is
+	// drained. It is not queued in events: the session has ended by then and
+	// the watch on ctx with it, so readLoop must not wait for room there.
+	last ASREvent
 }
 
 // Next advances to the next event. It returns false when the session has
@@ -261,7 +266,7 @@ func (s *ASRRealtimeStream) Next() bool {
 	select {
 	case event, ok := <-s.events:
 		if !ok {
-			return false
+			return s.nextLast()
 		}
 		s.mu.Lock()
 		s.current = event
@@ -270,6 +275,22 @@ func (s *ASRRealtimeStream) Next() bool {
 	case <-s.aborted:
 		return false
 	}
+}
+
+// nextLast advances to session_done, once: it follows every queued event.
+func (s *ASRRealtimeStream) nextLast() bool {
+	select {
+	case <-s.aborted:
+		return false
+	default:
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last == nil {
+		return false
+	}
+	s.current, s.last = s.last, nil
+	return true
 }
 
 // Event returns the event Next advanced to.
@@ -477,6 +498,13 @@ func (s *ASRRealtimeStream) readLoop() {
 			// Close before handing out the last event, so that a caller who
 			// stops at session_done does not leave the connection open.
 			s.finish(nil)
+			// The session is over and nothing watches ctx any more: leave
+			// the event for Next rather than wait for room in the buffer,
+			// which a consumer that stopped reading would never make.
+			s.mu.Lock()
+			s.last = event
+			s.mu.Unlock()
+			return
 		case *ASRSessionStartedEvent:
 			select {
 			case <-s.started:
@@ -491,13 +519,12 @@ func (s *ASRRealtimeStream) readLoop() {
 			}
 		}
 
-		// Blocks while the buffer is full: backpressure on the socket.
+		// Blocks while the buffer is full: backpressure on the socket. The
+		// session has not ended here, so Close, ctx and a failed send all
+		// release it through aborted.
 		select {
 		case s.events <- event:
 		case <-s.aborted:
-			return
-		}
-		if _, ok := event.(*ASRSessionDoneEvent); ok {
 			return
 		}
 	}

@@ -1190,6 +1190,124 @@ func TestASRRealtime_CloseWhileSendIsBlocked(t *testing.T) {
 	assertNoASRGoroutines(t)
 }
 
+// A session can end normally while the event buffer is full: session_done
+// arrives, the connection is closed, and the watch on ctx stops with it. The
+// reader must not wait for room in the buffer then, where neither ctx nor
+// anything but Close would release it. The session still ended well: Err is
+// nil, and a consumer that reads on gets every event, session_done last.
+func TestASRRealtime_SessionDoneWithFullBuffer(t *testing.T) {
+	asrTestDeadline(t)
+	// session_started and the drafts fill the buffer exactly; session_done is
+	// the one event more.
+	const total = asrEventBuffer + 1
+	start := func(t *testing.T) (*ASRRealtimeStream, context.CancelFunc) {
+		f := newFakeASRServer(t, func(c *fakeASRConn) {
+			if c.start() == nil {
+				return
+			}
+			for i := 1; i < asrEventBuffer; i++ {
+				c.send(msg{"type": "draft", "turn_index": 0, "text": "x", "settled_text": "", "audio_ms": 0})
+			}
+			c.done()
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		stream, err := f.client().ASR.StreamWebSocket(ctx, make(chan []byte), nil, nil)
+		if err != nil {
+			t.Fatalf("StreamWebSocket() error = %v", err)
+		}
+		// Nothing is read: the session ends with the buffer full.
+		select {
+		case <-stream.done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the session did not end")
+		}
+		if buffered := len(stream.events); buffered != asrEventBuffer {
+			t.Fatalf("buffered events = %d, want the buffer full at %d", buffered, asrEventBuffer)
+		}
+		return stream, cancel
+	}
+	// released fails the test unless both session goroutines have returned.
+	released := func(t *testing.T, stream *ASRRealtimeStream, when string) {
+		t.Helper()
+		exited := make(chan struct{})
+		go func() {
+			stream.wg.Wait()
+			close(exited)
+		}()
+		select {
+		case <-exited:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("the reader is still waiting on the full buffer %s", when)
+		}
+		assertNoASRGoroutines(t)
+	}
+	readAll := func(t *testing.T, stream *ASRRealtimeStream) {
+		t.Helper()
+		var events []ASREvent
+		within(t, 5*time.Second, "reading the events", func() {
+			for stream.Next() {
+				events = append(events, stream.Event())
+			}
+		})
+		if len(events) != total {
+			t.Fatalf("got %d events, want %d", len(events), total)
+		}
+		if _, ok := events[0].(*ASRSessionStartedEvent); !ok {
+			t.Errorf("first event = %T, want *ASRSessionStartedEvent", events[0])
+		}
+		for i, event := range events[1 : total-1] {
+			if d, ok := event.(*ASRDraftEvent); !ok || d.Seq != i+1 {
+				t.Fatalf("event %d = %+v, want the draft with seq %d", i+1, event, i+1)
+			}
+		}
+		if _, ok := events[total-1].(*ASRSessionDoneEvent); !ok {
+			t.Errorf("last event = %T, want *ASRSessionDoneEvent", events[total-1])
+		}
+		if stream.Next() {
+			t.Error("Next() = true after the last event")
+		}
+		if err := stream.Err(); err != nil {
+			t.Errorf("Err() = %v, want nil: the session ended normally", err)
+		}
+	}
+
+	t.Run("consumer gone, ctx canceled", func(t *testing.T) {
+		stream, cancel := start(t)
+		cancel()
+		released(t, stream, "after ctx was canceled")
+		if err := stream.Err(); err != nil {
+			t.Errorf("Err() = %v, want nil: the session ended normally", err)
+		}
+	})
+	t.Run("consumer gone, nothing called", func(t *testing.T) {
+		stream, _ := start(t)
+		released(t, stream, "after the session ended")
+	})
+	t.Run("consumer reads on", func(t *testing.T) {
+		stream, _ := start(t)
+		readAll(t, stream)
+		released(t, stream, "after every event was read")
+	})
+	t.Run("consumer reads on after ctx was canceled", func(t *testing.T) {
+		stream, cancel := start(t)
+		cancel()
+		released(t, stream, "after ctx was canceled")
+		readAll(t, stream)
+	})
+	t.Run("Close", func(t *testing.T) {
+		stream, _ := start(t)
+		within(t, 2*time.Second, "Close", func() { _ = stream.Close() })
+		assertNoASRGoroutines(t)
+		if stream.Next() {
+			t.Error("Next() = true after Close")
+		}
+		if err := stream.Err(); err != nil {
+			t.Errorf("Err() = %v", err)
+		}
+	})
+}
+
 // The first write of a session, the config message, is covered by ctx like
 // every later one: the dial deadline is gone once the upgrade has succeeded,
 // so a peer that stops reading right after it must not hang StreamWebSocket.
