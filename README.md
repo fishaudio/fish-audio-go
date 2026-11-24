@@ -84,6 +84,18 @@ audio, err := client.TTS.Convert(ctx, &fishaudio.ConvertParams{
 })
 ```
 
+**Choosing a model:**
+
+```go
+// Defaults to fishaudio.ModelS21Pro ("s2.1-pro") when Model is not set
+audio, err := client.TTS.Convert(ctx, &fishaudio.ConvertParams{
+	Text:  "Hello with Drama 3!",
+	Model: fishaudio.ModelDrama3,
+})
+```
+
+Available models: `ModelS21Pro` (default), `ModelS21ProFree`, `ModelDrama3`, `ModelS2Pro` and `ModelS1` (retires 2026-12-31).
+
 **Reusable configuration:**
 
 ```go
