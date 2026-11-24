@@ -37,7 +37,7 @@ func audioOf(chunks ...[]byte) <-chan []byte {
 func collect(t *testing.T, stream *ASRRealtimeStream) []ASREvent {
 	t.Helper()
 	var events []ASREvent
-	within(t, 5*time.Second, "reading the stream", func() {
+	within(t, "reading the stream", func() {
 		for stream.Next() {
 			events = append(events, stream.Event())
 		}
@@ -855,7 +855,7 @@ func TestASRRealtime_ConnectionClosedAtSessionDone(t *testing.T) {
 	}
 	// The caller stops at session_done and never calls Close.
 	sawDone := false
-	within(t, 5*time.Second, "reading up to session_done", func() {
+	within(t, "reading up to session_done", func() {
 		for stream.Next() {
 			if _, ok := stream.Event().(*ASRSessionDoneEvent); ok {
 				sawDone = true
@@ -875,7 +875,7 @@ func TestASRRealtime_ConnectionClosedAtSessionDone(t *testing.T) {
 		if !closed {
 			t.Error("the client left the connection open after session_done")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(asrTestWait):
 		t.Fatal("server did not finish")
 	}
 	assertNoASRGoroutines(t) // without Close
@@ -912,13 +912,13 @@ func TestASRRealtime_CloseWakesBlockedNext(t *testing.T) {
 	default:
 	}
 
-	within(t, 2*time.Second, "Close", func() { _ = stream.Close() })
+	within(t, "Close", func() { _ = stream.Close() })
 	select {
 	case got := <-result:
 		if got {
 			t.Error("Next() = true after Close")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(asrTestWait):
 		t.Fatal("Next() is still blocked after Close")
 	}
 	if err := stream.Err(); err != nil {
@@ -932,7 +932,7 @@ func TestASRRealtime_CloseWakesBlockedNext(t *testing.T) {
 	if err := stream.Finalize(); err == nil {
 		t.Error("Finalize() after Close = nil")
 	}
-	within(t, time.Second, "second Close", func() { _ = stream.Close() })
+	within(t, "second Close", func() { _ = stream.Close() })
 	assertNoASRGoroutines(t)
 }
 
@@ -980,7 +980,7 @@ func TestASRRealtime_AudioSourceFailureEndsSession(t *testing.T) {
 
 		start := time.Now()
 		n := 0
-		within(t, 3*time.Second, "reading a stream whose audio source failed", func() {
+		within(t, "reading a stream whose audio source failed", func() {
 			for stream.Next() {
 				n++
 			}
@@ -1008,7 +1008,7 @@ func TestASRRealtime_AudioSourceFailureEndsSession(t *testing.T) {
 			t.Fatal("no session_started")
 		}
 		time.AfterFunc(50*time.Millisecond, func() { fail(errMicrophone) })
-		within(t, 2*time.Second, "Next after the failure", func() {
+		within(t, "Next after the failure", func() {
 			if stream.Next() {
 				t.Error("Next() = true")
 			}
@@ -1046,7 +1046,7 @@ func TestASRRealtime_AudioSourceFailureEndsSession(t *testing.T) {
 			t.Fatal("no session_started")
 		}
 		time.AfterFunc(50*time.Millisecond, cancel)
-		within(t, 2*time.Second, "Next after cancel", func() {
+		within(t, "Next after cancel", func() {
 			for stream.Next() {
 			}
 		})
@@ -1063,7 +1063,7 @@ func TestASRRealtime_AudioSourceFailureEndsSession(t *testing.T) {
 		ctx, fail := context.WithCancelCause(context.Background())
 		time.AfterFunc(50*time.Millisecond, func() { fail(errMicrophone) })
 		var err error
-		within(t, 2*time.Second, "StreamWebSocket", func() {
+		within(t, "StreamWebSocket", func() {
 			_, err = f.client().ASR.StreamWebSocket(ctx, make(chan []byte), nil, nil)
 		})
 		if !errors.Is(err, errMicrophone) {
@@ -1108,7 +1108,9 @@ func TestASRRealtime_BackpressureAndCloseWithFullBuffer(t *testing.T) {
 	for {
 		before := sent.Load()
 		time.Sleep(200 * time.Millisecond)
-		if after := sent.Load(); after == before && after > 0 {
+		// The buffer must be full as well: on a loaded machine the server
+		// can stand still for that long without having stalled.
+		if after := sent.Load(); after == before && after > 0 && len(stream.events) == asrEventBuffer {
 			stalledAt = after
 			break
 		}
@@ -1133,7 +1135,7 @@ func TestASRRealtime_BackpressureAndCloseWithFullBuffer(t *testing.T) {
 
 	// Let the buffer fill up again, then close: the reader is parked on it.
 	time.Sleep(200 * time.Millisecond)
-	within(t, 2*time.Second, "Close with a full buffer", func() { _ = stream.Close() })
+	within(t, "Close with a full buffer", func() { _ = stream.Close() })
 	assertNoASRGoroutines(t)
 	if stream.Next() {
 		t.Error("Next() = true after Close")
@@ -1186,7 +1188,7 @@ func TestASRRealtime_CloseWhileSendIsBlocked(t *testing.T) {
 			t.Fatal("the sender never stalled")
 		}
 	}
-	within(t, 3*time.Second, "Close while a send is blocked", func() { _ = stream.Close() })
+	within(t, "Close while a send is blocked", func() { _ = stream.Close() })
 	assertNoASRGoroutines(t)
 }
 
@@ -1219,7 +1221,7 @@ func TestASRRealtime_SessionDoneWithFullBuffer(t *testing.T) {
 		// Nothing is read: the session ends with the buffer full.
 		select {
 		case <-stream.done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(asrTestWait):
 			t.Fatal("the session did not end")
 		}
 		if buffered := len(stream.events); buffered != asrEventBuffer {
@@ -1237,7 +1239,7 @@ func TestASRRealtime_SessionDoneWithFullBuffer(t *testing.T) {
 		}()
 		select {
 		case <-exited:
-		case <-time.After(2 * time.Second):
+		case <-time.After(asrTestWait):
 			t.Fatalf("the reader is still waiting on the full buffer %s", when)
 		}
 		assertNoASRGoroutines(t)
@@ -1245,7 +1247,7 @@ func TestASRRealtime_SessionDoneWithFullBuffer(t *testing.T) {
 	readAll := func(t *testing.T, stream *ASRRealtimeStream) {
 		t.Helper()
 		var events []ASREvent
-		within(t, 5*time.Second, "reading the events", func() {
+		within(t, "reading the events", func() {
 			for stream.Next() {
 				events = append(events, stream.Event())
 			}
@@ -1297,7 +1299,7 @@ func TestASRRealtime_SessionDoneWithFullBuffer(t *testing.T) {
 	})
 	t.Run("Close", func(t *testing.T) {
 		stream, _ := start(t)
-		within(t, 2*time.Second, "Close", func() { _ = stream.Close() })
+		within(t, "Close", func() { _ = stream.Close() })
 		assertNoASRGoroutines(t)
 		if stream.Next() {
 			t.Error("Next() = true after Close")
@@ -1397,9 +1399,9 @@ func TestASRRealtime_CancelWhileConfigWriteIsBlocked(t *testing.T) {
 			select {
 			case r = <-finished:
 				t.Logf("returned %v after ctx ended", time.Since(ended))
-			case <-time.After(3 * time.Second):
+			case <-time.After(asrTestWait):
 				close(returned)
-				t.Fatal("StreamWebSocket is still blocked 3s after ctx ended")
+				t.Fatal("StreamWebSocket is still blocked after ctx ended")
 			}
 		}
 		close(returned)
@@ -1423,7 +1425,7 @@ func TestASRRealtime_CancelWhileConfigWriteIsBlocked(t *testing.T) {
 			if !closed {
 				t.Error("the client left the connection open")
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(asrTestWait):
 			t.Error("the server never saw the end of the connection")
 		}
 		assertNoASRGoroutines(t)
@@ -1479,7 +1481,7 @@ func TestASRRealtime_CancelDuringHandshake(t *testing.T) {
 		}
 		client := NewClient(WithAPIKey("k"), WithBaseURL("http://"+listener.Addr().String()))
 		var err error
-		within(t, 3*time.Second, "StreamWebSocket during a stalled handshake", func() {
+		within(t, "StreamWebSocket during a stalled handshake", func() {
 			_, err = client.ASR.StreamWebSocket(ctx, make(chan []byte), nil, nil)
 		})
 		cancel()
@@ -1495,7 +1497,7 @@ func TestASRRealtime_CancelDuringHandshake(t *testing.T) {
 				if !closed {
 					t.Error("the client left the connection open")
 				}
-			case <-time.After(10 * time.Second):
+			case <-time.After(asrTestWait):
 				t.Error("the server never saw the end of the connection")
 			}
 		}
@@ -1532,7 +1534,7 @@ func TestASRRealtime_DeadlineReportedByTheConnection(t *testing.T) {
 	ctx := lateContext{Context: withDeadline, open: context.Background()}
 
 	client := NewClient(WithAPIKey("k"), WithBaseURL("http://"+listener.Addr().String()))
-	within(t, 3*time.Second, "StreamWebSocket during a stalled handshake", func() {
+	within(t, "StreamWebSocket during a stalled handshake", func() {
 		_, err = client.ASR.StreamWebSocket(ctx, make(chan []byte), nil, nil)
 	})
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -1650,7 +1652,7 @@ func TestASRRealtime_CancelWhileSendIsBlocked(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	fail(errMicrophone)
-	within(t, 2*time.Second, "Next after ctx is canceled during a blocked send", func() {
+	within(t, "Next after ctx is canceled during a blocked send", func() {
 		if stream.Next() {
 			t.Error("Next() = true")
 		}
@@ -1663,7 +1665,7 @@ func TestASRRealtime_CancelWhileSendIsBlocked(t *testing.T) {
 		if err == nil {
 			t.Error("Keepalive() = nil for a message that was never sent")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(asrTestWait):
 		t.Error("Keepalive() is still blocked after ctx was canceled")
 	}
 	assertNoASRGoroutines(t) // without Close
@@ -1717,7 +1719,7 @@ func TestASRRealtime_Ping(t *testing.T) {
 		c.serve(nil)
 	})
 
-	run := func(interval time.Duration) int64 {
+	run := func(interval time.Duration, want int64, wait time.Duration) int64 {
 		pings.Store(0)
 		opts := DefaultWebSocketOptions()
 		opts.PingInterval = interval
@@ -1726,7 +1728,12 @@ func TestASRRealtime_Ping(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StreamWebSocket() error = %v", err)
 		}
-		time.Sleep(200 * time.Millisecond) // an idle audio source
+		// An idle audio source: wait for the pings rather than for a time
+		// in which they should have come.
+		deadline := time.Now().Add(wait)
+		for pings.Load() < want && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
 		close(audio)
 		collect(t, stream)
 		if err := stream.Err(); err != nil {
@@ -1735,10 +1742,10 @@ func TestASRRealtime_Ping(t *testing.T) {
 		assertNoASRGoroutines(t)
 		return pings.Load()
 	}
-	if n := run(20 * time.Millisecond); n < 3 {
-		t.Errorf("server got %d pings in 200 ms at a 20 ms interval", n)
+	if n := run(20*time.Millisecond, 3, asrTestWait); n < 3 {
+		t.Errorf("server got %d pings at a 20 ms interval, want at least 3", n)
 	}
-	if n := run(0); n != 0 {
+	if n := run(0, 1, 200*time.Millisecond); n != 0 {
 		t.Errorf("server got %d pings with PingInterval 0", n)
 	}
 }

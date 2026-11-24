@@ -44,12 +44,15 @@ func newFakeASRServer(t *testing.T, script func(c *fakeASRConn)) *fakeASRServer 
 		f.mu.Lock()
 		f.headers = append(f.headers, r.Header.Clone())
 		f.mu.Unlock()
+		// Before the upgrade: the server's Close waits for a handler only
+		// until it has taken over the connection, so counting it afterwards
+		// would let a script start once the test's cleanup is over.
+		f.wg.Add(1)
+		defer f.wg.Done()
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
-		f.wg.Add(1)
-		defer f.wg.Done()
 		defer func() { _ = conn.Close() }()
 		script(&fakeASRConn{t: t, conn: conn})
 	}))
@@ -289,7 +292,7 @@ func assertNoASRGoroutines(t *testing.T) {
 	t.Helper()
 	const marker = "(*ASRRealtimeStream)."
 	buf := make([]byte, 1<<20)
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(asrTestWait)
 	for {
 		stacks := string(buf[:runtime.Stack(buf, true)])
 		if !strings.Contains(stacks, marker) {
@@ -328,8 +331,18 @@ func asrTestDeadline(t *testing.T) {
 	t.Cleanup(func() { timer.Stop() })
 }
 
-// within fails the test if fn does not return within d.
-func within(t *testing.T, d time.Duration, what string, fn func()) {
+// asrTestWait is how long a test waits for something that must happen before
+// it reports a hang. It is not a performance bound: it only has to be longer
+// than a loaded machine needs, and shorter than asrTestTimeout.
+const asrTestWait = 10 * time.Second
+
+// within fails the test if fn does not return within asrTestWait.
+func within(t *testing.T, what string, fn func()) {
+	t.Helper()
+	withinDuration(t, asrTestWait, what, fn)
+}
+
+func withinDuration(t *testing.T, d time.Duration, what string, fn func()) {
 	t.Helper()
 	finished := make(chan struct{})
 	go func() {
