@@ -1168,6 +1168,150 @@ func TestASRRealtime_CloseWhileSendIsBlocked(t *testing.T) {
 	assertNoASRGoroutines(t)
 }
 
+// The first write of a session, the config message, is covered by ctx like
+// every later one: the dial deadline is gone once the upgrade has succeeded,
+// so a peer that stops reading right after it must not hang StreamWebSocket.
+func TestASRRealtime_CancelWhileConfigWriteIsBlocked(t *testing.T) {
+	errMicrophone := errors.New("microphone unplugged")
+	tests := []struct {
+		name string
+		ctx  func() (context.Context, func())
+		want []error
+	}{
+		{
+			name: "canceled",
+			ctx: func() (context.Context, func()) {
+				ctx, cancel := context.WithCancel(context.Background())
+				time.AfterFunc(100*time.Millisecond, cancel)
+				return ctx, cancel
+			},
+			want: []error{context.Canceled},
+		},
+		{
+			name: "canceled with a cause",
+			ctx: func() (context.Context, func()) {
+				ctx, cancel := context.WithCancelCause(context.Background())
+				time.AfterFunc(100*time.Millisecond, func() { cancel(errMicrophone) })
+				return ctx, func() { cancel(nil) }
+			},
+			want: []error{context.Canceled, errMicrophone},
+		},
+		{
+			name: "deadline exceeded",
+			ctx: func() (context.Context, func()) {
+				return context.WithTimeout(context.Background(), 100*time.Millisecond)
+			},
+			want: []error{context.DeadlineExceeded},
+		},
+	}
+	// Far more than the socket buffers of both ends hold, so the write of
+	// the config blocks on a server that does not read.
+	params := &ASRRealtimeParams{Context: &ASRContext{Terms: []string{strings.Repeat("x", 64<<20)}}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			returned := make(chan struct{})
+			closedByClient := make(chan bool, 1)
+			f := newFakeASRServer(t, func(c *fakeASRConn) {
+				<-returned // the upgrade is done; reads nothing until the client gave up
+				closedByClient <- c.waitClosed(5 * time.Second)
+			})
+
+			ctx, cancel := tt.ctx()
+			defer cancel()
+			type result struct {
+				stream *ASRRealtimeStream
+				err    error
+			}
+			start := time.Now()
+			finished := make(chan result, 1)
+			go func() {
+				stream, err := f.client().ASR.StreamWebSocket(ctx, make(chan []byte), params, nil)
+				finished <- result{stream, err}
+			}()
+			var (
+				stream *ASRRealtimeStream
+				err    error
+			)
+			select {
+			case r := <-finished:
+				stream, err = r.stream, r.err
+			case <-time.After(3 * time.Second):
+				close(returned)
+				t.Fatal("StreamWebSocket is still blocked in the config write 3s after ctx ended")
+			}
+			close(returned)
+			t.Logf("returned after %v", time.Since(start))
+
+			if err == nil {
+				_ = stream.Close()
+				t.Fatal("StreamWebSocket() error = nil")
+			}
+			for _, want := range tt.want {
+				if !errors.Is(err, want) {
+					t.Errorf("error = %v, want errors.Is(err, %v)", err, want)
+				}
+			}
+			if !<-closedByClient {
+				t.Error("the client left the connection open")
+			}
+			assertNoASRGoroutines(t)
+		})
+	}
+}
+
+// The same for the upgrade itself: a server that accepts the connection and
+// never answers.
+func TestASRRealtime_CancelDuringHandshake(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	closedByClient := make(chan bool, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		// Read the request and never answer; EOF means the client hung up.
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		buf := make([]byte, 4096)
+		for {
+			if _, err := conn.Read(buf); err != nil {
+				netErr, isNetErr := err.(net.Error)
+				closedByClient <- !isNetErr || !netErr.Timeout()
+				return
+			}
+		}
+	}()
+
+	for _, want := range []error{context.Canceled, context.DeadlineExceeded} {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		if want == context.Canceled {
+			ctx, cancel = context.WithCancel(context.Background())
+			time.AfterFunc(100*time.Millisecond, cancel)
+		}
+		client := NewClient(WithAPIKey("k"), WithBaseURL("http://"+listener.Addr().String()))
+		var err error
+		within(t, 3*time.Second, "StreamWebSocket during a stalled handshake", func() {
+			_, err = client.ASR.StreamWebSocket(ctx, make(chan []byte), nil, nil)
+		})
+		cancel()
+		if !errors.Is(err, want) {
+			t.Errorf("error = %T (%v), want errors.Is(err, %v)", err, err, want)
+		}
+		// The goroutine above serves the first connection only. The second
+		// one stays in the listener's backlog, which stalls the upgrade just
+		// the same.
+		if want == context.Canceled && !<-closedByClient {
+			t.Error("the client left the connection open")
+		}
+	}
+	assertNoASRGoroutines(t)
+}
+
 // Canceling ctx ends the session even while a send is stuck on a server that
 // stopped reading: the writer cannot be the one that watches ctx.
 func TestASRRealtime_CancelWhileSendIsBlocked(t *testing.T) {

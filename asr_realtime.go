@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -66,9 +67,11 @@ var (
 // Transcripts start with a speaker tag such as "<|speaker:0|>" unless
 // params.Results.Diarize is Bool(false).
 //
-// Canceling ctx ends the session at once, and Err returns context.Cause(ctx).
-// To end a session because the audio source failed, cancel ctx with that
-// error (context.WithCancelCause).
+// Canceling ctx, or reaching its deadline, ends the session at once, at any
+// point from the dial on. The error, returned here or by Err, matches
+// ctx.Err() with errors.Is, and context.Cause(ctx) too: to end a session
+// because the audio source failed, cancel ctx with that error
+// (context.WithCancelCause).
 //
 // With the default options the SDK sends a WebSocket ping every 20 seconds,
 // which the server counts as activity: a session stays open, and billed, while
@@ -108,13 +111,42 @@ func (s *ASRService) StreamWebSocket(ctx context.Context, audio <-chan []byte, p
 		ReadBufferSize:   opts.ReadBufferSize,
 		WriteBufferSize:  opts.WriteBufferSize,
 	}
+	// The dialer applies ctx's deadline to the upgrade but does not watch for
+	// cancellation once the TCP connection is up: close that connection when
+	// ctx is done, so that a stalled upgrade ends with ctx too.
+	var (
+		dialMu  sync.Mutex
+		dialing net.Conn
+	)
+	dialer.NetDialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		netConn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+		if err == nil {
+			dialMu.Lock()
+			dialing = netConn
+			dialMu.Unlock()
+		}
+		return netConn, err
+	}
+	stopWatchingDial := context.AfterFunc(ctx, func() {
+		dialMu.Lock()
+		defer dialMu.Unlock()
+		if dialing != nil {
+			_ = dialing.Close()
+		}
+	})
 	conn, resp, err := dialer.DialContext(ctx, wsURL, header)
+	stopWatchingDial()
 	if err != nil {
 		if errors.Is(err, websocket.ErrBadHandshake) && resp != nil {
 			// The upgrade was refused (401, 402, 429, ...): same errors as the HTTP API.
 			body, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
 			return nil, newAPIError(resp.StatusCode, resp.Status, string(body))
+		}
+		if ctxErr := asrContextError(ctx); ctxErr != nil && !errors.Is(err, ctx.Err()) {
+			// The dialer reports a canceled upgrade as the I/O error of the
+			// connection it closed: keep ctx's error reachable.
+			err = fmt.Errorf("%w: %w", ctxErr, err)
 		}
 		return nil, &WebSocketError{Message: "websocket dial failed: " + err.Error(), Err: err}
 	}
@@ -129,20 +161,27 @@ func (s *ASRService) StreamWebSocket(ctx context.Context, audio <-chan []byte, p
 		aborted: make(chan struct{}),
 	}
 
-	if err := conn.WriteMessage(websocket.BinaryMessage, config); err != nil {
-		_ = conn.Close()
-		return nil, &WebSocketError{Message: "failed to send config: " + err.Error(), Err: err}
-	}
-
-	// Watched on its own, not by the goroutine that writes: a write can be
-	// stuck on a peer that stopped reading, and aborting closes the
-	// connection, which is what releases it.
+	// From here on ctx is watched on its own, not by whichever goroutine is
+	// writing: the dial deadline is gone once the upgrade has succeeded, and a
+	// write (the config below, audio later) can be stuck on a peer that
+	// stopped reading. Aborting closes the connection, which releases it.
 	stopWatchingCtx := context.AfterFunc(ctx, func() {
-		stream.abort(context.Cause(ctx))
+		stream.abort(asrContextError(ctx))
 	})
 	stream.mu.Lock()
 	stream.stopWatchingCtx = stopWatchingCtx
 	stream.mu.Unlock()
+
+	if err := conn.WriteMessage(websocket.BinaryMessage, config); err != nil {
+		// If ctx is done, that is the error: this one is only the write
+		// failing on the connection that was closed for it.
+		if ctxErr := asrContextError(ctx); ctxErr != nil {
+			stream.abort(ctxErr)
+		} else {
+			stream.abort(&WebSocketError{Message: "failed to send config: " + err.Error(), Err: err})
+		}
+		return nil, stream.Err()
+	}
 
 	stream.wg.Add(1)
 	go stream.readLoop()
@@ -246,7 +285,8 @@ func (s *ASRRealtimeStream) Event() ASREvent {
 //
 // It is an *ASRRealtimeError when the server ended the session with an error
 // or closed the connection with a code other than 1000, a *WebSocketError
-// when the connection was lost, and context.Cause(ctx) when ctx was canceled.
+// when the connection was lost, and an error matching ctx.Err() and
+// context.Cause(ctx) (with errors.Is) when ctx ended the session.
 func (s *ASRRealtimeStream) Err() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -462,6 +502,21 @@ func (s *ASRRealtimeStream) readLoop() {
 			return
 		}
 	}
+}
+
+// asrContextError returns the error of a ctx that is done, or nil. It matches
+// both ctx.Err() and context.Cause(ctx) with errors.Is, so that a caller can
+// test for context.Canceled whether or not a cause was given.
+func asrContextError(ctx context.Context) error {
+	err := ctx.Err()
+	if err == nil {
+		return nil
+	}
+	cause := context.Cause(ctx)
+	if cause == nil || errors.Is(cause, err) {
+		return cause
+	}
+	return fmt.Errorf("%w: %w", err, cause)
 }
 
 // asrCloseError turns the error that ended reading into the session's error:
