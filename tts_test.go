@@ -780,3 +780,80 @@ func TestTTSService_StreamWebSocket_WithModel(t *testing.T) {
 		t.Fatal("test timed out")
 	}
 }
+
+func TestTTSService_Stream_DefaultModel(t *testing.T) {
+	tests := []struct {
+		name   string
+		params *StreamParams
+		want   string
+	}{
+		{"default", &StreamParams{Text: "Hello"}, "s2.1-pro"},
+		{"params model", &StreamParams{Text: "Hello", Model: ModelDrama3}, "drama-3"},
+		{"config model", &StreamParams{Text: "Hello", Config: &TTSConfig{Model: ModelS21ProFree}}, "s2.1-pro-free"},
+		{"params over config", &StreamParams{Text: "Hello", Model: ModelS2Pro, Config: &TTSConfig{Model: ModelDrama3}}, "s2-pro"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.Header.Get("model")
+				_, _ = w.Write([]byte("audio"))
+			}))
+			defer server.Close()
+
+			client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
+			stream, err := client.TTS.Stream(context.Background(), tt.params)
+			if err != nil {
+				t.Fatalf("Stream() error = %v", err)
+			}
+			if _, err := stream.Collect(); err != nil {
+				t.Fatalf("Collect() error = %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("model header = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTTSService_StreamWebSocket_DefaultModel(t *testing.T) {
+	modelCh := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		modelCh <- r.Header.Get("model")
+
+		conn, err := wsUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		// Read start, send finish
+		_, _, _ = conn.ReadMessage()
+
+		resp := wsResponse{Event: "finish", Reason: "stop"}
+		data, _ := msgpack.Marshal(resp)
+		_ = conn.WriteMessage(websocket.BinaryMessage, data)
+	}))
+	defer server.Close()
+
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
+
+	textChan := make(chan string)
+	close(textChan)
+
+	stream, err := client.TTS.StreamWebSocket(context.Background(), textChan, &StreamParams{}, nil)
+	if err != nil {
+		t.Fatalf("StreamWebSocket() error = %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	select {
+	case got := <-modelCh:
+		if got != "s2.1-pro" {
+			t.Errorf("model header = %q, want %q", got, "s2.1-pro")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for WebSocket upgrade request")
+	}
+}
