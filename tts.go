@@ -286,6 +286,9 @@ func (s *TTSService) StreamWebSocket(ctx context.Context, textChan <-chan string
 	if model := s.getModel(params); model != "" {
 		header.Set("model", string(model))
 	}
+	if err := s.client.addHeaders(ctx, header); err != nil {
+		return nil, err
+	}
 
 	conn, _, err := dialer.DialContext(ctx, wsURL, header)
 	if err != nil {

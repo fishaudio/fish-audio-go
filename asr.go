@@ -100,6 +100,9 @@ func (s *ASRService) Transcribe(ctx context.Context, audio []byte, params *Trans
 	req.Header.Set("Authorization", "Bearer "+s.client.apiKey)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("User-Agent", userAgent)
+	if err := s.client.addHeaders(ctx, req.Header); err != nil {
+		return nil, err
+	}
 
 	// Execute request
 	resp, err := s.client.httpClient.Do(req)

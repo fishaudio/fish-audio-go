@@ -267,6 +267,85 @@ if err != nil {
 }
 ```
 
+## Tracing
+
+Fish Audio continues your distributed trace when a request carries a W3C
+[`traceparent`](https://www.w3.org/TR/trace-context/) header, on HTTP calls and on
+the WebSocket. Pass `WithHeaderProvider`: the SDK calls it for every request and
+every WebSocket handshake, right before sending, with the `ctx` you passed to the
+call, and adds the headers it returns.
+
+**OpenTelemetry.** An `otelhttp` transport (`WithHTTPClient`) covers HTTP calls but
+not the WebSocket, which does not use the HTTP client. A provider covers both:
+
+```go
+import (
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+)
+
+client := fishaudio.NewClient(fishaudio.WithHeaderProvider(func(ctx context.Context) http.Header {
+	h := http.Header{}
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(h)) // the span in ctx
+	return h
+}))
+```
+
+Using both is harmless: on HTTP calls `otelhttp` replaces the provider's
+`traceparent` with its own client span's.
+
+**Your own trace IDs.** The API accepts only a valid `traceparent` (version `00`:
+32 hex digits of trace ID, 16 of parent ID, 2 of flags). Convert your IDs; an
+invalid value is ignored by the API, and the request gets a new trace ID.
+
+```go
+var hexID = regexp.MustCompile(`^[0-9a-f]+$`)
+
+func toTraceparent(traceID, spanID string) string {
+	trace := strings.ToLower(strings.ReplaceAll(traceID, "-", "")) // a UUID becomes 32 hex digits
+	span := strings.ToLower(spanID)
+	if len(trace) > 32 || len(span) > 16 || !hexID.MatchString(trace) || !hexID.MatchString(span) {
+		return "" // not convertible: no header
+	}
+	trace = strings.Repeat("0", 32-len(trace)) + trace
+	span = strings.Repeat("0", 16-len(span)) + span
+	if strings.Trim(trace, "0") == "" || strings.Trim(span, "0") == "" {
+		return "" // all zeros is invalid
+	}
+	return "00-" + trace + "-" + span + "-01" // 01: sampled
+}
+
+client := fishaudio.NewClient(fishaudio.WithHeaderProvider(func(ctx context.Context) http.Header {
+	req, ok := ctx.Value(requestKey{}).(*MyRequest) // set by your middleware
+	if !ok {
+		return nil // no header is added
+	}
+	if tp := toTraceparent(req.TraceID, req.SpanID); tp != "" {
+		return http.Header{"Traceparent": {tp}}
+	}
+	return nil
+}))
+```
+
+**No tracing.** Nothing to do.
+
+For one call, put headers on its context with `ContextWithHeaders`. They reach every
+method, the WebSocket included, and win over the provider:
+
+```go
+ctx = fishaudio.ContextWithHeaders(ctx, http.Header{"Traceparent": {tp}})
+audio, err := client.TTS.Convert(ctx, &fishaudio.ConvertParams{Text: "Hello"})
+```
+
+Rules:
+- Neither can set `Authorization`, `model`, `Content-Type`, `Content-Length`, `Host`
+  or WebSocket handshake headers; those names are ignored. A `User-Agent` from
+  `ContextWithHeaders` is appended to the SDK's; one from the provider is ignored.
+- A header name or value that HTTP does not allow fails the call with an error
+  before anything is sent. A panic in the provider is not recovered.
+- Concurrent calls call the provider concurrently, each with its own `ctx`; it must
+  be safe for concurrent use. It runs once per request, so keep it fast.
+
 ## Resources
 
 - **Documentation:** [Go SDK Guide](https://docs.fish.audio/developer-guide/sdk-guide/go/) | [API Reference](https://docs.fish.audio/api-reference/sdk/go/)

@@ -89,6 +89,8 @@ type Client struct {
 	timeout    time.Duration
 	httpClient *http.Client
 
+	headerProvider HeaderProvider
+
 	// Services
 	TTS     *TTSService
 	ASR     *ASRService
@@ -176,6 +178,9 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 			}
 			req.URL.RawQuery = q.Encode()
 		}
+	}
+	if err := c.addHeaders(ctx, req.Header); err != nil {
+		return nil, err
 	}
 
 	resp, err := c.httpClient.Do(req)
