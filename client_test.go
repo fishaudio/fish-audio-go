@@ -95,10 +95,8 @@ func TestClient_DoRequest_SetsHeaders(t *testing.T) {
 			t.Errorf("Authorization = %q, want %q", auth, "Bearer test-key")
 		}
 
-		userAgent := r.Header.Get("User-Agent")
-		expected := "fish-audio-go/" + Version
-		if userAgent != expected {
-			t.Errorf("User-Agent = %q, want %q", userAgent, expected)
+		if got := r.Header.Get("User-Agent"); got != userAgent {
+			t.Errorf("User-Agent = %q, want %q", got, userAgent)
 		}
 
 		w.WriteHeader(http.StatusOK)

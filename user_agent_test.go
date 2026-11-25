@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"regexp"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 
@@ -14,14 +16,73 @@ import (
 )
 
 // RFC 9110 section 5.6.2 tchar; a product is token ["/" product-version].
-var productGrammar = regexp.MustCompile("^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+/[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$")
+const tchar = "[!#$%&'*+\\-.^_`|~0-9A-Za-z]"
+
+var (
+	productGrammar = regexp.MustCompile("^" + tchar + "+/" + tchar + "+$")
+	// A product, then one comment with nothing that RFC 9110 ctext excludes.
+	userAgentGrammar = regexp.MustCompile("^" + tchar + "+/" + tchar + `+ \([^()\\\x00-\x1f\x7f]*\)$`)
+)
 
 func TestUserAgent_Format(t *testing.T) {
-	if userAgent != "fish-audio-go/"+Version {
-		t.Errorf("userAgent = %q, want fish-audio-go/%s", userAgent, Version)
+	if product != "fish-audio-go/"+Version {
+		t.Errorf("product = %q, want fish-audio-go/%s", product, Version)
 	}
-	if !productGrammar.MatchString(userAgent) {
-		t.Errorf("userAgent %q is not an RFC 9110 product (token \"/\" token)", userAgent)
+	if !productGrammar.MatchString(product) {
+		t.Errorf("product %q is not an RFC 9110 product (token \"/\" token)", product)
+	}
+	want := product + " (go " + strings.TrimPrefix(runtime.Version(), "go") + "; " + runtime.GOOS + ")"
+	if userAgent != want {
+		t.Errorf("userAgent = %q, want %q", userAgent, want)
+	}
+	if !userAgentGrammar.MatchString(userAgent) {
+		t.Errorf("userAgent %q is not product RWS comment", userAgent)
+	}
+}
+
+func TestBuildUserAgent_Shape(t *testing.T) {
+	tests := []struct{ version, goos, want string }{
+		{"go1.24.1", "linux", product + " (go 1.24.1; linux)"},
+		{"go1.25rc2", "darwin", product + " (go 1.25rc2; darwin)"},
+		{"go1.24.1", "windows", product + " (go 1.24.1; windows)"},
+		{"go1.24.1", "FreeBSD", product + " (go 1.24.1; freebsd)"},
+		// A development toolchain reports "devel go1.26-abcdef Tue Jan 1 ...".
+		{"devel go1.26-abcdef Tue Jan 1 00:00:00 2026 +0000", "linux", product + " (go devel; linux)"},
+		{"", "", product + " (go unknown; unknown)"},
+		{"go", "linux", product + " (go unknown; linux)"},
+	}
+	for _, tt := range tests {
+		if got := buildUserAgent(tt.version, tt.goos); got != tt.want {
+			t.Errorf("buildUserAgent(%q, %q) = %q, want %q", tt.version, tt.goos, got, tt.want)
+		}
+	}
+}
+
+func TestBuildUserAgent_DropsAnythingOdd(t *testing.T) {
+	hostile := []string{
+		"go1.24.1 (evil)",
+		"go1.24.1)",
+		"go1.24.1\\(",
+		"go1.24.1\r\nX-Injected: 1",
+		"go1.24.1\x00",
+		"go1.24.1; host=alice-laptop",
+		"go1.24.1 /home/alice",
+	}
+	for _, value := range hostile {
+		if got := commentValue(value); got != "go1.24.1" {
+			t.Errorf("commentValue(%q) = %q, want go1.24.1", value, got)
+		}
+		if got := buildUserAgent(value, value); !userAgentGrammar.MatchString(got) {
+			t.Errorf("buildUserAgent(%q) = %q breaks the comment grammar", value, got)
+		}
+	}
+	for _, value := range []string{"(x)", "\\", "", "   "} {
+		if got := commentValue(value); got != "unknown" {
+			t.Errorf("commentValue(%q) = %q, want unknown", value, got)
+		}
+	}
+	if got := commentValue(strings.Repeat("1", 100)); got != strings.Repeat("1", 32) {
+		t.Errorf("commentValue did not cap at 32 bytes: %q", got)
 	}
 }
 
