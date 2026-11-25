@@ -24,12 +24,16 @@ import (
 // allow fails the call with an error before anything is sent. A panic is not
 // recovered.
 //
-// With OpenTelemetry:
+// With OpenTelemetry (go.opentelemetry.io/otel/trace), this sends the span in
+// the call's ctx as traceparent and no other trace data, so you can find your
+// requests in Fish Audio's traces:
 //
 //	fishaudio.WithHeaderProvider(func(ctx context.Context) http.Header {
-//		h := http.Header{}
-//		otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(h))
-//		return h
+//		sc := trace.SpanContextFromContext(ctx)
+//		if !sc.IsValid() {
+//			return nil
+//		}
+//		return http.Header{"Traceparent": {fmt.Sprintf("00-%s-%s-%s", sc.TraceID(), sc.SpanID(), sc.TraceFlags())}}
 //	})
 type HeaderProvider func(ctx context.Context) http.Header
 

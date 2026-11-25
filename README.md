@@ -276,23 +276,28 @@ every WebSocket handshake, right before sending, with the `ctx` you passed to th
 call, and adds the headers it returns.
 
 **OpenTelemetry.** An `otelhttp` transport (`WithHTTPClient`) covers HTTP calls but
-not the WebSocket, which does not use the HTTP client. A provider covers both:
+not the WebSocket, which does not use the HTTP client. A provider covers both. The SDK
+does not import OpenTelemetry, so add it yourself:
 
 ```go
-import (
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/propagation"
-)
+import "go.opentelemetry.io/otel/trace"
 
 client := fishaudio.NewClient(fishaudio.WithHeaderProvider(func(ctx context.Context) http.Header {
-	h := http.Header{}
-	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(h)) // the span in ctx
-	return h
+	sc := trace.SpanContextFromContext(ctx) // the span in the call's ctx
+	if !sc.IsValid() {
+		return nil
+	}
+	return http.Header{"Traceparent": {fmt.Sprintf("00-%s-%s-%s", sc.TraceID(), sc.SpanID(), sc.TraceFlags())}}
 }))
 ```
 
-Using both is harmless: on HTTP calls `otelhttp` replaces the provider's
-`traceparent` with its own client span's.
+With it, the SDK sends the current trace ID to Fish Audio in a `traceparent` header
+so you can find your requests in Fish Audio's traces. It sends no other trace data
+(no `baggage`, no `tracestate`). To turn this off, leave out `WithHeaderProvider`.
+
+Using it together with `otelhttp` is harmless: on HTTP calls `otelhttp` replaces the
+provider's `traceparent` with its own client span's, so each request carries one
+header in one trace.
 
 **Your own trace IDs.** The API accepts only a valid `traceparent` (version `00`:
 32 hex digits of trace ID, 16 of parent ID, 2 of flags). Convert your IDs; an
