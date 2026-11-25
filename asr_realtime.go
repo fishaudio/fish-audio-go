@@ -430,6 +430,10 @@ func (s *ASRRealtimeStream) writeFrame(data []byte) error {
 	return nil
 }
 
+// asrAfterDone, if set, runs in end right after done is closed. Tests use it
+// to look at a session at the moment it is marked as ended.
+var asrAfterDone func(*ASRRealtimeStream)
+
 // end ends the session with err (nil for a normal end) and closes the
 // connection. Only the first call has an effect, and it alone decides what
 // becomes of the events not yet delivered: with discard they are dropped, so
@@ -443,13 +447,19 @@ func (s *ASRRealtimeStream) end(err error, discard bool) bool {
 	won := false
 	s.doneOnce.Do(func() {
 		won = true
+		// The error and the discard become visible together, and before
+		// done: once Err reports that ctx or a send ended the session, Next
+		// hands out nothing more.
 		s.mu.Lock()
 		s.err = err
+		if discard {
+			s.discard()
+		}
 		stopWatchingCtx := s.stopWatchingCtx
 		s.mu.Unlock()
 		close(s.done)
-		if discard {
-			s.discard()
+		if asrAfterDone != nil {
+			asrAfterDone(s)
 		}
 		if stopWatchingCtx != nil {
 			stopWatchingCtx()

@@ -1133,6 +1133,68 @@ func TestASRRealtime_CtxDoneAfterNormalEndKeepsEvents(t *testing.T) {
 	})
 }
 
+// When ctx or a failed send ends a session, the session is marked as ended
+// and its unread events are dropped in one step. Otherwise there is a moment
+// in which Err already reports the failure while Next still hands out a
+// buffered event. The hook looks at the session at the instant it is marked
+// as ended, from the goroutine that ended it.
+func TestASRRealtime_EndedAndDiscardedTogether(t *testing.T) {
+	asrTestDeadline(t)
+	errSend := errors.New("write on a closed connection")
+	tests := []struct {
+		name string
+		end  func(stream *ASRRealtimeStream, cancel context.CancelFunc)
+		want error
+	}{
+		{"ctx", func(_ *ASRRealtimeStream, cancel context.CancelFunc) { cancel() }, context.Canceled},
+		{"failed send", func(stream *ASRRealtimeStream, _ context.CancelFunc) { go stream.abort(errSend) }, errSend},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			release := make(chan struct{})
+			defer close(release)
+			f := newFakeASRServer(t, func(c *fakeASRConn) {
+				if c.start() == nil {
+					return
+				}
+				for i := 0; i < 3; i++ {
+					c.send(msg{"type": "draft", "turn_index": 0, "text": "x", "settled_text": "", "audio_ms": 0})
+				}
+				<-release
+			})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			stream := mustStream(t, f, ctx, make(chan []byte), nil)
+			// Unread events are waiting: session_started and the drafts.
+			within(t, "the events to arrive", func() {
+				for len(stream.events) < 4 {
+					time.Sleep(time.Millisecond)
+				}
+			})
+
+			type seen struct {
+				err  error
+				next bool
+			}
+			atDone := make(chan seen, 1)
+			asrAfterDone = func(s *ASRRealtimeStream) { atDone <- seen{s.Err(), s.Next()} }
+			defer func() { asrAfterDone = nil }()
+
+			tt.end(stream, cancel)
+			var got seen
+			within(t, "the session to end", func() { got = <-atDone })
+			if !errors.Is(got.err, tt.want) {
+				t.Errorf("Err() at the end = %v, want %v", got.err, tt.want)
+			}
+			if got.next {
+				t.Errorf("Next() = true (%T) once the session had ended with %v", stream.Event(), got.err)
+			}
+			within(t, "the session goroutines", stream.wg.Wait)
+			assertNoASRGoroutines(t)
+		})
+	}
+}
+
 // The real race, many times: ctx is canceled just as the server ends the
 // session. Either may win, and each outcome must be whole: the ctx error
 // with the rest dropped, or every event up to session_done with no error.
