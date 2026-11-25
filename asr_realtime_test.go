@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1071,6 +1072,141 @@ func TestASRRealtime_AudioSourceFailureEndsSession(t *testing.T) {
 		}
 		assertNoASRGoroutines(t)
 	})
+}
+
+// Ending a session is a race between its normal end and ctx: the watch on ctx
+// is released only after the session is marked as ended, so the callback can
+// already be running by then. Whichever ends the session decides what happens
+// to the events not yet read. If the normal end won, they are all delivered,
+// session_done last, and Err is nil: a ctx that came second changes nothing.
+func TestASRRealtime_CtxDoneAfterNormalEndKeepsEvents(t *testing.T) {
+	asrTestDeadline(t)
+	want := []string{"session_started", "speech_start", "draft", "committed", "session_done"}
+
+	// ended returns a session that ended normally with nothing read yet, and
+	// whose goroutines have returned.
+	ended := func(t *testing.T) (*ASRRealtimeStream, context.Context) {
+		f := newFakeASRServer(t, func(c *fakeASRConn) { c.serve(nil) })
+		ctx, cancel := context.WithCancel(context.Background())
+		stream := mustStream(t, f, ctx, audioOf(pcm(40)), nil)
+		within(t, "the end of the session", func() {
+			<-stream.done
+			stream.wg.Wait()
+		})
+		cancel()
+		return stream, ctx
+	}
+	delivered := func(t *testing.T, stream *ASRRealtimeStream) {
+		t.Helper()
+		if got := eventTypes(collect(t, stream)); !reflect.DeepEqual(got, want) {
+			t.Errorf("events = %v, want %v", got, want)
+		}
+		if err := stream.Err(); err != nil {
+			t.Errorf("Err() = %v, want nil: the session ended normally", err)
+		}
+	}
+
+	// The callback of the watch on ctx, started just before the watch was
+	// released: it runs with the session already ended. Calling it here is
+	// that interleaving, without having to hit the window.
+	t.Run("ctx callback", func(t *testing.T) {
+		stream, ctx := ended(t)
+		stream.ctxDone(ctx)
+		delivered(t, stream)
+	})
+	// The same for the other path that ends a session from this side.
+	t.Run("failed send", func(t *testing.T) {
+		stream, _ := ended(t)
+		stream.sendFailed(errors.New("write on a closed connection"))
+		delivered(t, stream)
+	})
+	// Close is the caller's own decision and still discards them.
+	t.Run("Close", func(t *testing.T) {
+		stream, _ := ended(t)
+		_ = stream.Close()
+		if stream.Next() {
+			t.Errorf("Next() = true after Close: %T", stream.Event())
+		}
+		if err := stream.Err(); err != nil {
+			t.Errorf("Err() = %v", err)
+		}
+	})
+}
+
+// The real race, many times: ctx is canceled just as the server ends the
+// session. Either may win, and each outcome must be whole: the ctx error
+// with the rest dropped, or every event up to session_done with no error.
+// Never a session cut short that reports success.
+func TestASRRealtime_CtxDoneRacingNormalEnd(t *testing.T) {
+	asrTestDeadline(t)
+	want := []string{"session_started", "speech_start", "draft", "committed", "session_done"}
+	// One server for every run: each script takes the run it belongs to.
+	type run struct {
+		i      int
+		cancel context.CancelFunc
+	}
+	runs := make(chan run, 1)
+	f := newFakeASRServer(t, func(c *fakeASRConn) {
+		r := <-runs
+		if c.start() == nil {
+			return
+		}
+		for {
+			m, _, ok := c.recv()
+			if !ok {
+				return
+			}
+			if m["type"] == "audio_done" {
+				break
+			}
+		}
+		c.send(msg{"type": "speech_start", "turn_index": 0, "audio_ms": 0})
+		c.send(msg{"type": "draft", "turn_index": 0, "text": "hello", "settled_text": "", "audio_ms": 40})
+		c.commit("hello", "audio_done")
+		// Cancel around session_done, at a different point on each run:
+		// before it, right after it, a few scheduler turns later (while the
+		// client is ending the session), or once the client is done.
+		if r.i%4 == 0 {
+			go r.cancel()
+		}
+		c.send(msg{"type": "session_done", "stats": msg{"audio_ms": 40, "turns": 1, "request_id": "req-1"}})
+		switch r.i % 4 {
+		case 1:
+			go r.cancel()
+		case 2:
+			go func() {
+				for n := 0; n < r.i; n++ {
+					runtime.Gosched()
+				}
+				r.cancel()
+			}()
+		}
+		c.close(websocket.CloseNormalClosure, "done")
+		r.cancel()
+	})
+
+	var normal, canceled int
+	for i := 0; i < 60; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		runs <- run{i, cancel}
+		stream := mustStream(t, f, ctx, audioOf(pcm(40)), nil)
+		got := eventTypes(collect(t, stream))
+		err := stream.Err()
+		switch {
+		case err == nil:
+			normal++
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("run %d: Err() = nil with events %v, want %v", i, got, want)
+			}
+		case errors.Is(err, context.Canceled):
+			canceled++
+		default:
+			t.Fatalf("run %d: Err() = %v", i, err)
+		}
+		cancel()
+	}
+	assertNoASRGoroutines(t)
+	t.Logf("normal end won %d times, ctx %d times", normal, canceled)
 }
 
 // A session that ended normally is not turned into a failure by a later cancel.

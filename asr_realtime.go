@@ -164,9 +164,7 @@ func (s *ASRService) StreamWebSocket(ctx context.Context, audio <-chan []byte, p
 	// writing: the dial deadline is gone once the upgrade has succeeded, and a
 	// write (the config below, audio later) can be stuck on a peer that
 	// stopped reading. Aborting closes the connection, which releases it.
-	stopWatchingCtx := context.AfterFunc(ctx, func() {
-		stream.abort(asrContextError(ctx))
-	})
+	stopWatchingCtx := context.AfterFunc(ctx, func() { stream.ctxDone(ctx) })
 	stream.mu.Lock()
 	stream.stopWatchingCtx = stopWatchingCtx
 	stream.mu.Unlock()
@@ -232,8 +230,10 @@ type ASRRealtimeStream struct {
 	// connection is closed and err is final by then.
 	done     chan struct{}
 	doneOnce sync.Once
-	// aborted is closed when the session is cut short locally (Close, ctx,
-	// failed send): events still buffered are dropped rather than delivered.
+	// aborted is closed when the events not yet delivered are dropped: by
+	// whichever of ctx or a failed send ended the session, and by Close at
+	// any time. It is not closed by one of those arriving after the session
+	// had ended otherwise.
 	aborted   chan struct{}
 	abortOnce sync.Once
 
@@ -255,8 +255,9 @@ type ASRRealtimeStream struct {
 // ended; check Err to see whether it ended with an error.
 //
 // Events the server sent before a normal end or a server-side failure are all
-// delivered first. After Close, a canceled ctx or a failed send, Next returns
-// false at once.
+// delivered first. After Close, or once a canceled ctx or a failed send has
+// ended the session, Next returns false at once. What ended the session
+// decides: a ctx canceled after the session had already ended drops nothing.
 func (s *ASRRealtimeStream) Next() bool {
 	select {
 	case <-s.aborted:
@@ -314,13 +315,17 @@ func (s *ASRRealtimeStream) Err() error {
 }
 
 // Close ends the session now and closes the connection, without waiting for
-// the open turn to be committed. A goroutine blocked in Next returns false.
-// It is safe to call more than once and after the session has ended.
+// the open turn to be committed. Events not yet read are dropped, and a
+// goroutine blocked in Next returns false. It is safe to call more than once
+// and after the session has ended.
 //
 // To end a session normally instead, close the audio channel and keep reading
 // until Next returns false.
 func (s *ASRRealtimeStream) Close() error {
-	s.abort(nil)
+	s.end(nil, true)
+	// Close is the caller's own call: it discards what is left even when
+	// the session had already ended.
+	s.discard()
 	s.wg.Wait()
 	return nil
 }
@@ -425,15 +430,27 @@ func (s *ASRRealtimeStream) writeFrame(data []byte) error {
 	return nil
 }
 
-// finish ends the session with err (nil for a normal end) and closes the
-// connection. Only the first call has an effect.
-func (s *ASRRealtimeStream) finish(err error) {
+// end ends the session with err (nil for a normal end) and closes the
+// connection. Only the first call has an effect, and it alone decides what
+// becomes of the events not yet delivered: with discard they are dropped, so
+// that a consumer in Next, and a readLoop waiting for room in the buffer, are
+// released at once. It reports whether this call ended the session.
+//
+// A call that comes second must not discard anything. The watch on ctx is
+// released only after done is closed, so its callback can still arrive here
+// after a normal end; the events of that session are still to be delivered.
+func (s *ASRRealtimeStream) end(err error, discard bool) bool {
+	won := false
 	s.doneOnce.Do(func() {
+		won = true
 		s.mu.Lock()
 		s.err = err
 		stopWatchingCtx := s.stopWatchingCtx
 		s.mu.Unlock()
 		close(s.done)
+		if discard {
+			s.discard()
+		}
 		if stopWatchingCtx != nil {
 			stopWatchingCtx()
 		}
@@ -444,14 +461,30 @@ func (s *ASRRealtimeStream) finish(err error) {
 		// Unblocks a ReadMessage or WriteMessage in progress.
 		_ = s.conn.Close()
 	})
+	return won
 }
 
-// abort ends the session from this side and drops events not yet delivered,
-// so that a consumer in Next, and a readLoop waiting for room in the buffer,
-// are released at once.
-func (s *ASRRealtimeStream) abort(err error) {
-	s.finish(err)
+// discard drops the events not yet delivered.
+func (s *ASRRealtimeStream) discard() {
 	s.abortOnce.Do(func() { close(s.aborted) })
+}
+
+// finish ends the session as the server or the connection did: err is nil
+// for a normal end. Events already received are still delivered.
+func (s *ASRRealtimeStream) finish(err error) {
+	s.end(err, false)
+}
+
+// ctxDone runs when ctx is done while it is watched.
+func (s *ASRRealtimeStream) ctxDone(ctx context.Context) {
+	s.abort(asrContextError(ctx))
+}
+
+// abort ends the session from this side (ctx, a failed send) and drops the
+// events not yet delivered. It does nothing, and drops nothing, if the
+// session has already ended.
+func (s *ASRRealtimeStream) abort(err error) {
+	s.end(err, true)
 }
 
 // readLoop turns server messages into events until the session ends.
