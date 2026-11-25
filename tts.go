@@ -277,6 +277,7 @@ type wsResponse struct {
 	Event  string `msgpack:"event"`
 	Audio  []byte `msgpack:"audio,omitempty"`
 	Reason string `msgpack:"reason,omitempty"`
+	Error  string `msgpack:"error,omitempty"`
 }
 
 // StreamWebSocket streams text to speech over WebSocket for real-time generation.
@@ -410,6 +411,15 @@ func (s *TTSService) StreamWebSocket(ctx context.Context, textChan <-chan string
 				if len(resp.Audio) > 0 {
 					audioChan <- resp.Audio
 				}
+			case "error":
+				// Sent when the API rejects the start event (for example an
+				// invalid language tag). Nothing follows it, so stop here
+				// instead of waiting for audio or a finish event.
+				select {
+				case errChan <- &WebSocketError{Message: resp.Error}:
+				default:
+				}
+				return
 			case "finish":
 				// "stop" is normal - means we requested the stop
 				// Only treat "error" as an actual error
@@ -454,12 +464,27 @@ func (s *WebSocketAudioStream) Next() bool {
 	case chunk, ok := <-s.audioChan:
 		if !ok {
 			s.closed = true
+			s.takeQueuedError()
 			return false
 		}
 		s.buf = chunk
 		return true
 	case err := <-s.errChan:
 		s.err = err
+		return false
+	}
+}
+
+// takeQueuedError records an error the receiver queued before it closed the
+// audio channel. Once both channels are ready, select picks one at random, so
+// without this check a failed stream could end as if it had finished cleanly.
+// The caller must hold s.mu.
+func (s *WebSocketAudioStream) takeQueuedError() bool {
+	select {
+	case err := <-s.errChan:
+		s.err = err
+		return true
+	default:
 		return false
 	}
 }
@@ -506,6 +531,9 @@ func (s *WebSocketAudioStream) Read(p []byte) (n int, err error) {
 	select {
 	case chunk, ok := <-s.audioChan:
 		if !ok {
+			if s.takeQueuedError() {
+				return 0, s.err
+			}
 			return 0, io.EOF
 		}
 		n = copy(p, chunk)

@@ -677,6 +677,81 @@ func TestTTSService_StreamWebSocket_ErrorEvent(t *testing.T) {
 	}
 }
 
+func TestTTSService_StreamWebSocket_ServerErrorEvent(t *testing.T) {
+	// What the API does with an invalid start event: an error event, then it
+	// keeps the connection open without sending anything more.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := wsUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		_, _, _ = conn.ReadMessage()
+		data, _ := msgpack.Marshal(map[string]string{"event": "error", "error": `Invalid language "en us".`})
+		_ = conn.WriteMessage(websocket.BinaryMessage, data)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
+	textChan := make(chan string)
+	defer close(textChan)
+
+	stream, err := client.TTS.StreamWebSocket(context.Background(), textChan, &StreamParams{Language: "en US"}, nil)
+	if err != nil {
+		t.Fatalf("StreamWebSocket() error = %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := stream.Collect()
+		done <- err
+	}()
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Collect() did not return after the server's error event")
+	}
+
+	wsErr, ok := err.(*WebSocketError)
+	if !ok {
+		t.Fatalf("expected *WebSocketError, got %T: %v", err, err)
+	}
+	if wsErr.Message != `Invalid language "en us".` {
+		t.Errorf("error message = %q, want the server's message", wsErr.Message)
+	}
+}
+
+func TestWebSocketAudioStream_ErrorQueuedBeforeClose(t *testing.T) {
+	// The receiver queues its error and then closes the audio channel, so both
+	// are ready when Next or Read looks. The error must win every time.
+	for i := 0; i < 200; i++ {
+		audioChan := make(chan []byte)
+		errChan := make(chan error, 1)
+		errChan <- &WebSocketError{Message: "boom"}
+		close(audioChan)
+		stream := &WebSocketAudioStream{audioChan: audioChan, errChan: errChan}
+		if stream.Next() {
+			t.Fatal("Next() = true, want false")
+		}
+		if stream.Err() == nil {
+			t.Fatalf("iteration %d: Next() dropped the queued error", i)
+		}
+
+		readErrChan := make(chan error, 1)
+		readErrChan <- &WebSocketError{Message: "boom"}
+		reader := &WebSocketAudioStream{audioChan: audioChan, errChan: readErrChan}
+		if _, err := reader.Read(make([]byte, 8)); err == nil || err == io.EOF {
+			t.Fatalf("iteration %d: Read() error = %v, want the queued error", i, err)
+		}
+	}
+}
+
 func TestTTSService_StreamWebSocket_ConnectionError(t *testing.T) {
 	client := NewClient(WithAPIKey("test-key"), WithBaseURL("http://127.0.0.1:1"))
 
