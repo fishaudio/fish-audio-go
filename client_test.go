@@ -96,7 +96,7 @@ func TestClient_DoRequest_SetsHeaders(t *testing.T) {
 		}
 
 		userAgent := r.Header.Get("User-Agent")
-		expected := "fish-audio/go/" + Version
+		expected := "fish-audio-go/" + Version
 		if userAgent != expected {
 			t.Errorf("User-Agent = %q, want %q", userAgent, expected)
 		}

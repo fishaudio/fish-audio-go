@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -21,6 +22,26 @@ const (
 	// Version is the SDK version.
 	Version = "1.1.1" // x-release-please-version
 )
+
+// userAgent is the SDK's product, fish-audio-go/<Version>: the format every
+// Fish Audio SDK sends (one RFC 9110 product, token "/" token), so the API can
+// tell which SDK and version made a request.
+const userAgent = "fish-audio-go/" + Version
+
+// userAgentWith returns the User-Agent to send: the SDK's product, followed by
+// the caller's value if there is one. A caller's value is appended rather than
+// allowed to replace the SDK's, as in the other Fish Audio SDKs, so an app can
+// name itself without hiding which SDK made the request.
+func userAgentWith(caller string) string {
+	caller = strings.TrimSpace(caller)
+	if caller == userAgent || strings.HasPrefix(caller, userAgent+" ") {
+		caller = strings.TrimSpace(caller[len(userAgent):])
+	}
+	if caller == "" {
+		return userAgent
+	}
+	return userAgent + " " + caller
+}
 
 // Client is the Fish Audio API client.
 type Client struct {
@@ -95,7 +116,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 
 	// Set headers
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("User-Agent", "fish-audio/go/"+Version)
+	req.Header.Set("User-Agent", userAgent)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -103,6 +124,10 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	// Apply request options
 	if opts != nil {
 		for k, v := range opts.AdditionalHeaders {
+			if http.CanonicalHeaderKey(k) == "User-Agent" {
+				req.Header.Set("User-Agent", userAgentWith(v))
+				continue
+			}
 			req.Header.Set(k, v)
 		}
 		if len(opts.AdditionalQueryParams) > 0 {
