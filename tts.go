@@ -31,7 +31,7 @@ type Prosody struct {
 
 // TTSConfig is reusable configuration for text-to-speech requests.
 type TTSConfig struct {
-	// Model is the TTS model to use. Options: "s2.1-pro", "s2.1-pro-free", "drama-3", "s2-pro", "s1". Default: "s2.1-pro".
+	// Model is the TTS model to use. Options: "s2.1-pro", "s2.1-pro-free", "drama-3", "s3-pro", "s2-pro", "s1". Default: "s2.1-pro".
 	Model Model `json:"model,omitempty"`
 	// Format is the audio output format. Options: "mp3", "wav", "pcm", "opus". Default: "mp3".
 	Format AudioFormat `json:"format,omitempty"`
@@ -63,7 +63,7 @@ type TTSConfig struct {
 type ConvertParams struct {
 	// Text is the text to synthesize into speech (required).
 	Text string `json:"text"`
-	// Model is the TTS model to use. Options: "s2.1-pro", "s2.1-pro-free", "drama-3", "s2-pro", "s1". Default: "s2.1-pro".
+	// Model is the TTS model to use. Options: "s2.1-pro", "s2.1-pro-free", "drama-3", "s3-pro", "s2-pro", "s1". Default: "s2.1-pro".
 	Model Model `json:"model,omitempty"`
 	// ReferenceID is the voice model ID to use.
 	ReferenceID string `json:"reference_id,omitempty"`
@@ -83,7 +83,7 @@ type ConvertParams struct {
 type StreamParams struct {
 	// Text is the text to synthesize into speech (required).
 	Text string `json:"text"`
-	// Model is the TTS model to use. Options: "s2.1-pro", "s2.1-pro-free", "drama-3", "s2-pro", "s1". Default: "s2.1-pro".
+	// Model is the TTS model to use. Options: "s2.1-pro", "s2.1-pro-free", "drama-3", "s3-pro", "s2-pro", "s1". Default: "s2.1-pro".
 	Model Model `json:"-"`
 	// ReferenceID is the voice model ID to use.
 	ReferenceID string `json:"reference_id,omitempty"`

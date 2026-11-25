@@ -97,7 +97,7 @@ audio, err := client.TTS.Convert(ctx, &fishaudio.ConvertParams{
 })
 ```
 
-Available models: `ModelS21Pro` (default), `ModelS21ProFree`, `ModelDrama3`, `ModelS2Pro` and `ModelS1` (retires 2026-12-31).
+Available models: `ModelS21Pro` (default), `ModelS21ProFree`, `ModelDrama3`, `ModelS3Pro`, `ModelS2Pro` and `ModelS1` (retires 2026-12-31).
 
 **Reusable configuration:**
 

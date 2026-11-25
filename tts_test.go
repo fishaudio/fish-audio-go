@@ -789,6 +789,7 @@ func TestTTSService_Stream_DefaultModel(t *testing.T) {
 	}{
 		{"default", &StreamParams{Text: "Hello"}, "s2.1-pro"},
 		{"params model", &StreamParams{Text: "Hello", Model: ModelDrama3}, "drama-3"},
+		{"s3-pro model", &StreamParams{Text: "Hello", Model: ModelS3Pro}, "s3-pro"},
 		{"config model", &StreamParams{Text: "Hello", Config: &TTSConfig{Model: ModelS21ProFree}}, "s2.1-pro-free"},
 		{"params over config", &StreamParams{Text: "Hello", Model: ModelS2Pro, Config: &TTSConfig{Model: ModelDrama3}}, "s2-pro"},
 	}

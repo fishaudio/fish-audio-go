@@ -70,4 +70,6 @@ const (
 	ModelS21ProFree Model = "s2.1-pro-free"
 	// ModelDrama3 is the Drama 3 model.
 	ModelDrama3 Model = "drama-3"
+	// ModelS3Pro is the S3 Pro model.
+	ModelS3Pro Model = "s3-pro"
 )
