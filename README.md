@@ -87,6 +87,18 @@ audio, err := client.TTS.Convert(ctx, &fishaudio.ConvertParams{
 })
 ```
 
+**Language of the text:**
+
+```go
+// "$300" is read as "trescientos pesos" with es-MX, "trescientos dólares" with es
+audio, err := client.TTS.Convert(ctx, &fishaudio.ConvertParams{
+	Text:     "La entrada cuesta $300.",
+	Language: "es-MX",
+})
+```
+
+`Language` is a BCP-47 tag such as `en`, `es-MX` or `zh-CN`. It only changes how numbers, dates, units and symbols are spelled out before synthesis; it does not change the voice or accent. Leave it empty to let the API detect the language of each chunk, which is also the right choice for text that mixes languages. It is also available on `StreamParams` and `TTSConfig`; on `StreamWebSocket` it applies to the whole session. See [supported normalization languages](https://docs.fish.audio/features/text-to-speech#supported-normalization-languages).
+
 **Choosing a model:**
 
 ```go

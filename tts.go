@@ -43,6 +43,9 @@ type TTSConfig struct {
 	OpusBitrate int `json:"opus_bitrate,omitempty"`
 	// Normalize indicates whether to normalize/clean the input text. Default: true.
 	Normalize *bool `json:"normalize,omitempty"`
+	// Language is the BCP-47 tag of the text's language, such as "en", "es-MX"
+	// or "zh-CN". See ConvertParams.Language.
+	Language string `json:"language,omitempty"`
 	// ChunkLength is the characters per generation chunk. Range: 100-300. Default: 200.
 	ChunkLength int `json:"chunk_length,omitempty"`
 	// Latency is the generation mode. Options: "normal", "balanced". Default: "balanced".
@@ -73,6 +76,13 @@ type ConvertParams struct {
 	Format AudioFormat `json:"format,omitempty"`
 	// Latency is the generation mode.
 	Latency LatencyMode `json:"latency,omitempty"`
+	// Language is the BCP-47 tag of the text's language, such as "en", "es-MX"
+	// or "zh-CN". It only changes how text normalization spells out numbers,
+	// dates, units and symbols (and word-timestamp alignment); it does not
+	// change the voice or accent. It is sent as given and the API checks it.
+	// Empty means unset: the field is not sent and the API detects the
+	// language of each chunk. Overrides Config.Language.
+	Language string `json:"language,omitempty"`
 	// Speed is a shorthand for setting prosody speed (0.5-2.0).
 	Speed float64 `json:"-"`
 	// Config provides additional TTS configuration.
@@ -93,6 +103,13 @@ type StreamParams struct {
 	Format AudioFormat `json:"format,omitempty"`
 	// Latency is the generation mode.
 	Latency LatencyMode `json:"latency,omitempty"`
+	// Language is the BCP-47 tag of the text's language, such as "en", "es-MX"
+	// or "zh-CN". It only changes how text normalization spells out numbers,
+	// dates, units and symbols (and word-timestamp alignment); it does not
+	// change the voice or accent. It is sent as given and the API checks it.
+	// Empty means unset: the field is not sent and the API detects the
+	// language of each chunk. Overrides Config.Language.
+	Language string `json:"language,omitempty"`
 	// Speed is a shorthand for setting prosody speed (0.5-2.0).
 	Speed float64 `json:"-"`
 	// Config provides additional TTS configuration.
@@ -110,6 +127,7 @@ type ttsRequest struct {
 	References  []ReferenceAudio `json:"references,omitempty" msgpack:"references,omitempty"`
 	ReferenceID string           `json:"reference_id,omitempty" msgpack:"reference_id,omitempty"`
 	Normalize   *bool            `json:"normalize,omitempty" msgpack:"normalize,omitempty"`
+	Language    string           `json:"language,omitempty" msgpack:"language,omitempty"`
 	Latency     LatencyMode      `json:"latency,omitempty" msgpack:"latency,omitempty"`
 	Prosody     *Prosody         `json:"prosody,omitempty" msgpack:"prosody,omitempty"`
 	TopP        float64          `json:"top_p,omitempty" msgpack:"top_p,omitempty"`
@@ -130,6 +148,7 @@ func (s *TTSService) Convert(ctx context.Context, params *ConvertParams) ([]byte
 		References:  params.References,
 		Format:      params.Format,
 		Latency:     params.Latency,
+		Language:    params.Language,
 		Speed:       params.Speed,
 		Config:      params.Config,
 	})
@@ -179,6 +198,7 @@ func (s *TTSService) buildRequest(params *StreamParams) *ttsRequest {
 		References:  params.References,
 		Format:      params.Format,
 		Latency:     params.Latency,
+		Language:    params.Language,
 	}
 
 	// Apply speed as prosody
@@ -203,6 +223,9 @@ func (s *TTSService) buildRequest(params *StreamParams) *ttsRequest {
 		}
 		if cfg.Normalize != nil {
 			req.Normalize = cfg.Normalize
+		}
+		if cfg.Language != "" && req.Language == "" {
+			req.Language = cfg.Language
 		}
 		if cfg.ChunkLength != 0 {
 			req.ChunkLength = cfg.ChunkLength
