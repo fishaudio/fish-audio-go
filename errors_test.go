@@ -67,7 +67,7 @@ func TestNewAPIError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := newAPIError(tt.statusCode, "test message", "test body")
+			err := newAPIError(tt.statusCode, "test message", "test body", nil)
 			gotType := getTypeName(err)
 			if gotType != tt.expectedType {
 				t.Errorf("newAPIError(%d) type = %s, want %s", tt.statusCode, gotType, tt.expectedType)
@@ -77,7 +77,7 @@ func TestNewAPIError(t *testing.T) {
 }
 
 func TestNewAPIError_PreservesFields(t *testing.T) {
-	err := newAPIError(401, "Unauthorized", `{"error": "invalid_token"}`)
+	err := newAPIError(401, "Unauthorized", `{"error": "invalid_token"}`, nil)
 
 	var authErr *AuthenticationError
 	if !errors.As(err, &authErr) {

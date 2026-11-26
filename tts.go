@@ -3,6 +3,7 @@ package fishaudio
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -285,8 +286,14 @@ func (s *TTSService) StreamWebSocket(ctx context.Context, textChan <-chan string
 		header.Set("model", string(model))
 	}
 
-	conn, _, err := dialer.DialContext(ctx, wsURL, header)
+	conn, resp, err := dialer.DialContext(ctx, wsURL, header)
 	if err != nil {
+		if errors.Is(err, websocket.ErrBadHandshake) && resp != nil && resp.StatusCode >= 400 {
+			// The server refused the handshake with an HTTP error response.
+			// gorilla keeps only the first 1024 bytes of its body.
+			body, _ := io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("%w: %w", newAPIError(resp.StatusCode, resp.Status, string(body), resp.Header), err)
+		}
 		return nil, fmt.Errorf("websocket dial failed: %w", err)
 	}
 

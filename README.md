@@ -267,6 +267,15 @@ if err != nil {
 }
 ```
 
+Every `APIError` carries the headers of the error response. When you contact support, include the trace id and the error code. Either can be absent.
+
+```go
+var apiErr *fishaudio.APIError
+if errors.As(err, &apiErr) {
+	fmt.Println(apiErr.Header.Get("x-fish-trace-id"), apiErr.Header.Get("x-fish-error-code"))
+}
+```
+
 ## Resources
 
 - **Documentation:** [Go SDK Guide](https://docs.fish.audio/developer-guide/sdk-guide/go/) | [API Reference](https://docs.fish.audio/api-reference/sdk/go/)

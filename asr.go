@@ -110,7 +110,7 @@ func (s *ASRService) Transcribe(ctx context.Context, audio []byte, params *Trans
 
 	if resp.StatusCode >= 400 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, newAPIError(resp.StatusCode, resp.Status, string(bodyBytes))
+		return nil, newAPIError(resp.StatusCode, resp.Status, string(bodyBytes), resp.Header)
 	}
 
 	// Parse response
