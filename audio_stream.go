@@ -29,6 +29,11 @@ import (
 //	stream, _ := client.TTS.Stream(ctx, params)
 //	audio, err := stream.Collect()
 type AudioStream struct {
+	// Header holds the headers of the HTTP response that opened the stream,
+	// for example x-fish-trace-id. It stays readable after the stream is
+	// closed or has failed.
+	Header http.Header `json:"-"`
+
 	resp      *http.Response
 	buf       []byte
 	chunkSize int
@@ -40,6 +45,7 @@ type AudioStream struct {
 // newAudioStream creates a new AudioStream from an HTTP response.
 func newAudioStream(resp *http.Response) *AudioStream {
 	return &AudioStream{
+		Header:    resp.Header,
 		resp:      resp,
 		chunkSize: 4096,
 	}
