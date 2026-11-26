@@ -52,6 +52,14 @@ func checkTrace(ctx context.Context, sent []string, resp *http.Response) {
 	if sentID != "" && strings.EqualFold(sentID, apiID) {
 		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// A logger that drops Warn must not use up the one warning: turning Warn
+	// on later should still show it.
+	if !slog.Default().Enabled(ctx, slog.LevelWarn) {
+		return
+	}
 	if !traceWarned.CompareAndSwap(false, true) {
 		return
 	}

@@ -15,7 +15,7 @@ import (
 // The SDK calls it once for every SDK call that sends an HTTP request or
 // opens a WebSocket, right before sending, on the goroutine that made the
 // call, with the ctx passed to that call. If the server redirects, net/http
-// sends the same headers again without calling it a second time. Concurrent calls call it concurrently, so it must be
+// resends the request without calling it a second time. Concurrent calls call it concurrently, so it must be
 // safe for concurrent use. Keep it fast: the request waits for it.
 //
 // Return nil, nil to add nothing. A non-nil error fails the call before
@@ -47,7 +47,10 @@ import (
 // Every name that is not ignored reaches the server with every value
 // accepted exactly as given, over HTTP/1.1, HTTP/2 and the WebSocket
 // handshake alike (a User-Agent from [ContextWithHeaders] after the SDK's
-// own), unless an HTTP transport you configure changes it.
+// own), unless an HTTP transport you configure changes it. On a redirect
+// net/http applies its own rules to the request it resends: it sets Referer,
+// and on a redirect to another host it drops Authorization, Cookie, Cookie2,
+// Proxy-Authorization and Www-Authenticate.
 //
 // The API returns the trace id it used in the X-Fish-Trace-Id response
 // header. If the SDK set a traceparent (from the provider or

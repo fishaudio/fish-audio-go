@@ -1,6 +1,7 @@
 package fishaudio
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"net/http"
@@ -457,5 +458,30 @@ func TestTraceWarning_ReplacedInThisProcessIsToldApart(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A logger that drops Warn must not use up the once-per-process warning:
+// when Warn is turned on later, the next mismatch is still logged.
+func TestTraceWarning_DisabledWarnDoesNotUseUpTheWarning(t *testing.T) {
+	traceWarned.Store(false)
+	t.Cleanup(func() { traceWarned.Store(false) })
+	var level slog.LevelVar
+	level.Set(slog.LevelError)
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: &level})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	sent := []string{"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"}
+	resp := &http.Response{Header: http.Header{"X-Fish-Trace-Id": {"4bf92f3577b34da6a3ce929d0e0e4736"}}}
+	checkTrace(context.Background(), sent, resp)
+	if buf.Len() != 0 {
+		t.Fatalf("logged while Warn is disabled: %s", buf.String())
+	}
+	level.Set(slog.LevelWarn)
+	checkTrace(context.Background(), sent, resp)
+	if !strings.Contains(buf.String(), "is not the one the API used") {
+		t.Fatalf("no warning after Warn was enabled: %q", buf.String())
 	}
 }
