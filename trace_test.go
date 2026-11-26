@@ -79,7 +79,7 @@ func traceGateway(t *testing.T, mode traceMode, status int) *httptest.Server {
 	return server
 }
 
-// tracePaths are the SDK's 11 request paths and the TTS WebSocket handshake.
+// tracePaths are the SDK's 10 HTTP request paths and the TTS WebSocket handshake.
 var tracePaths = []struct {
 	name string
 	call func(ctx context.Context, c *Client) error

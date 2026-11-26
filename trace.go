@@ -102,9 +102,6 @@ func checkTrace(ctx context.Context, sent []string, resp *http.Response) {
 	attrs = append(attrs,
 		slog.String("api_trace_id", apiID),
 		slog.String("hint", hint+"; see "+traceDocsURL))
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	slog.Default().WarnContext(ctx, traceMismatchMessage, attrs...)
 }
 

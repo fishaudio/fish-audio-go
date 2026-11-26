@@ -391,8 +391,8 @@ Rules:
 - Concurrent calls call the provider concurrently, each with its own `ctx`; it must
   be safe for concurrent use. It runs once per SDK call, so keep it fast; if the
   server redirects, net/http resends the request without another call, under its own
-  redirect rules: it sets `Referer`, and on a redirect to another host it drops
-  `Authorization`, `Cookie`, `Cookie2`, `Proxy-Authorization` and `WWW-Authenticate`.
+  redirect rules, which change or drop some headers: for example it sets `Referer`,
+  and it drops credential headers when the redirect leaves the original domain.
 - The SDK reads the header the provider returns after the provider returns, so do not
   modify it afterwards: return a new `http.Header` on every call, or the same one if
   nothing ever modifies it.
