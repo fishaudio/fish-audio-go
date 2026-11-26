@@ -113,3 +113,20 @@ func TestStreamWebSocket_DialFailureWithoutResponse(t *testing.T) {
 		t.Errorf("a failed connection must not be an APIError: %v", err)
 	}
 }
+
+// Every typed error unwraps to the *APIError that carries the headers.
+func TestAPIError_TypedErrorsUnwrap(t *testing.T) {
+	for _, status := range []int{400, 401, 403, 404, 422, 429, 500, 503} {
+		header := http.Header{"X-Fish-Trace-Id": {"trace-123"}}
+		err := newAPIError(status, "refused", "", header)
+
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) {
+			t.Errorf("status %d: errors.As(*APIError) did not match %T", status, err)
+			continue
+		}
+		if apiErr.StatusCode != status || apiErr.Header.Get("x-fish-trace-id") != "trace-123" {
+			t.Errorf("status %d: got status %d, header %v", status, apiErr.StatusCode, apiErr.Header)
+		}
+	}
+}
