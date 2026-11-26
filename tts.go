@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/vmihailenco/msgpack/v5"
@@ -254,12 +255,143 @@ type wsResponse struct {
 	Event  string `msgpack:"event"`
 	Audio  []byte `msgpack:"audio,omitempty"`
 	Reason string `msgpack:"reason,omitempty"`
+	Error  string `msgpack:"error,omitempty"`
+}
+
+// wsSession owns the connection of one WebSocket stream and the two goroutines
+// that use it: one sends text, one reads audio.
+type wsSession struct {
+	conn *websocket.Conn
+
+	// stop is closed when the stream is over, for any reason. Both goroutines
+	// watch it. stopErr says why the stream ended; nil is a clean end. It is
+	// written before stop is closed.
+	stop     chan struct{}
+	stopOnce sync.Once
+	stopErr  error
+
+	// abandoned is closed when the stream was ended by something other than
+	// the server's messages: Close, a cancelled context, a failed write.
+	// Audio that is still buffered is then not worth waiting for.
+	abandoned chan struct{}
+
+	connOnce sync.Once
+	wg       sync.WaitGroup
+}
+
+// shutdown ends the stream. The first call wins: its cause is the stream's
+// error. Safe to call from any goroutine, any number of times.
+func (w *wsSession) shutdown(cause error, abandon bool) {
+	w.stopOnce.Do(func() {
+		w.stopErr = cause
+		if abandon {
+			close(w.abandoned)
+		}
+		close(w.stop)
+		w.closeConn()
+	})
+}
+
+// closeConn tells the server the client is leaving and closes the connection.
+// Closing the connection also unblocks a goroutine that is reading or writing.
+func (w *wsSession) closeConn() {
+	w.connOnce.Do(func() {
+		msg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
+		_ = w.conn.WriteControl(websocket.CloseMessage, msg, time.Now().Add(time.Second))
+		_ = w.conn.Close()
+	})
+}
+
+// send writes one event. A failed write ends the stream with that error.
+func (w *wsSession) send(event any, what string) bool {
+	data, err := msgpack.Marshal(event)
+	if err != nil {
+		w.shutdown(fmt.Errorf("failed to marshal %s: %w", what, err), true)
+		return false
+	}
+	if err := w.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		w.shutdown(fmt.Errorf("failed to send %s: %w", what, err), true)
+		return false
+	}
+	return true
+}
+
+// sendText forwards text chunks until textChan is closed or the stream is over.
+func (w *wsSession) sendText(textChan <-chan string) {
+	for {
+		select {
+		case text, ok := <-textChan:
+			if !ok {
+				w.send(closeEvent{Event: "stop"}, "stop event")
+				return
+			}
+			if !w.send(textEvent{Event: "text", Text: text}, "text") {
+				return
+			}
+		case <-w.stop:
+			return
+		}
+	}
+}
+
+// readAudio reads server messages until the stream is over and returns why it
+// ended; nil is a clean end.
+func (w *wsSession) readAudio(audioChan chan<- []byte) error {
+	for {
+		_, data, err := w.conn.ReadMessage()
+		if err != nil {
+			// The server ends a stream with a finish message. A connection
+			// that goes away before that, whatever the close code, has not
+			// delivered the whole stream.
+			return &WebSocketError{
+				Message: fmt.Sprintf("websocket closed before the stream finished: %v", err),
+				Err:     err,
+			}
+		}
+
+		var resp wsResponse
+		if err := msgpack.Unmarshal(data, &resp); err != nil {
+			return fmt.Errorf("failed to decode response: %w", err)
+		}
+
+		switch resp.Event {
+		case "audio":
+			if len(resp.Audio) > 0 {
+				select {
+				case audioChan <- resp.Audio:
+				case <-w.stop:
+					return nil
+				}
+			}
+		case "error":
+			// The server rejected the request, for example an unknown
+			// reference_id. It sends nothing more and keeps the connection
+			// open, so this message is the end of the stream.
+			msg := resp.Error
+			if msg == "" {
+				msg = "server reported an error"
+			}
+			return &WebSocketError{Message: msg}
+		case "finish":
+			// "stop" is normal - means we requested the stop
+			// Only treat "error" as an actual error
+			if resp.Reason == "error" {
+				return &WebSocketError{Message: "stream finished with error"}
+			}
+			return nil
+		}
+	}
 }
 
 // StreamWebSocket streams text to speech over WebSocket for real-time generation.
 //
 // The textChan receives text chunks to synthesize. Close the channel to end streaming.
 // Returns a WebSocketAudioStream that can be iterated for audio chunks.
+//
+// The stream ends when the server finishes, when the server reports an error,
+// when the connection is lost, when ctx is cancelled, or when the caller calls
+// Close. Every end releases the connection. After the stream has ended, text
+// is no longer read from textChan.
 func (s *TTSService) StreamWebSocket(ctx context.Context, textChan <-chan string, params *StreamParams, opts *WebSocketOptions) (*WebSocketAudioStream, error) {
 	if opts == nil {
 		opts = DefaultWebSocketOptions()
@@ -308,106 +440,52 @@ func (s *TTSService) StreamWebSocket(ctx context.Context, textChan <-chan string
 		return nil, fmt.Errorf("failed to send start event: %w", err)
 	}
 
-	// Create channels for audio chunks and errors
 	audioChan := make(chan []byte, 100)
 	errChan := make(chan error, 1)
-	doneChan := make(chan struct{})
+	sess := &wsSession{
+		conn:      conn,
+		stop:      make(chan struct{}),
+		abandoned: make(chan struct{}),
+	}
+
+	// Cancelling ctx ends the stream.
+	stopWatchingCtx := context.AfterFunc(ctx, func() {
+		sess.shutdown(ctx.Err(), true)
+	})
+
+	sess.wg.Add(2)
 
 	// Goroutine to send text chunks
 	go func() {
-		defer func() {
-			// Send close event
-			close := closeEvent{Event: "stop"}
-			if data, err := msgpack.Marshal(close); err == nil {
-				_ = conn.WriteMessage(websocket.BinaryMessage, data)
-			}
-		}()
-
-		for {
-			select {
-			case text, ok := <-textChan:
-				if !ok {
-					return
-				}
-				evt := textEvent{Event: "text", Text: text}
-				data, err := msgpack.Marshal(evt)
-				if err != nil {
-					select {
-					case errChan <- fmt.Errorf("failed to marshal text event: %w", err):
-					default:
-					}
-					return
-				}
-				if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
-					select {
-					case errChan <- fmt.Errorf("failed to send text: %w", err):
-					default:
-					}
-					return
-				}
-			case <-doneChan:
-				return
-			}
-		}
+		defer sess.wg.Done()
+		sess.sendText(textChan)
 	}()
 
 	// Goroutine to receive audio chunks
 	go func() {
+		defer sess.wg.Done()
+		// The stream's error is in errChan before audioChan is closed, so a
+		// caller that has read all audio always finds it.
 		defer close(audioChan)
-		defer func() { _ = conn.Close() }()
-		defer close(doneChan)
 
-		for {
-			_, data, err := conn.ReadMessage()
-			if err != nil {
-				// Handle normal closure and no-status-received (1005) as expected closures
-				// Server often closes without a formal close frame after sending finish event
-				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseNoStatusReceived) {
-					return
-				}
-				select {
-				case errChan <- err:
-				default:
-				}
-				return
-			}
-
-			// Decode msgpack response
-			var resp wsResponse
-			if err := msgpack.Unmarshal(data, &resp); err != nil {
-				select {
-				case errChan <- fmt.Errorf("failed to decode response: %w", err):
-				default:
-				}
-				return
-			}
-
-			switch resp.Event {
-			case "audio":
-				if len(resp.Audio) > 0 {
-					audioChan <- resp.Audio
-				}
-			case "finish":
-				// "stop" is normal - means we requested the stop
-				// Only treat "error" as an actual error
-				if resp.Reason == "error" {
-					select {
-					case errChan <- &WebSocketError{Message: "stream finished with error"}:
-					default:
-					}
-				}
-				return
-			}
+		sess.shutdown(sess.readAudio(audioChan), false)
+		stopWatchingCtx()
+		if sess.stopErr != nil {
+			errChan <- sess.stopErr
 		}
 	}()
 
 	return &WebSocketAudioStream{
 		audioChan: audioChan,
 		errChan:   errChan,
+		sess:      sess,
 	}, nil
 }
 
 // WebSocketAudioStream wraps WebSocket audio chunks for iteration.
+//
+// Call Close when you stop reading before the stream has ended; it releases
+// the connection. A stream that was read to its end has already released it.
 type WebSocketAudioStream struct {
 	audioChan <-chan []byte
 	errChan   <-chan error
@@ -415,30 +493,53 @@ type WebSocketAudioStream struct {
 	err       error
 	closed    bool
 	mu        sync.Mutex
+
+	// sess is nil on a stream that has no connection behind it.
+	sess *wsSession
 }
 
-// Next advances to the next chunk of audio data.
-// Returns false when there are no more chunks or an error occurred.
-func (s *WebSocketAudioStream) Next() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// recv waits for the next chunk of audio. ok is false when the stream is over;
+// s.err then says why. The caller holds s.mu.
+func (s *WebSocketAudioStream) recv() (chunk []byte, ok bool) {
 	if s.closed || s.err != nil {
-		return false
+		return nil, false
+	}
+
+	var abandoned <-chan struct{}
+	if s.sess != nil {
+		abandoned = s.sess.abandoned
 	}
 
 	select {
 	case chunk, ok := <-s.audioChan:
-		if !ok {
-			s.closed = true
-			return false
+		if ok {
+			return chunk, true
 		}
-		s.buf = chunk
-		return true
-	case err := <-s.errChan:
-		s.err = err
+		// All audio has been read. The error, if any, is already waiting.
+		select {
+		case s.err = <-s.errChan:
+		default:
+		}
+	case <-abandoned:
+		s.err = s.sess.stopErr
+	}
+	s.closed = true
+	return nil, false
+}
+
+// Next advances to the next chunk of audio data.
+// Returns false when there are no more chunks or an error occurred.
+// Audio that arrived before an error is returned first.
+func (s *WebSocketAudioStream) Next() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	chunk, ok := s.recv()
+	if !ok {
 		return false
 	}
+	s.buf = chunk
+	return true
 }
 
 // Bytes returns the current chunk of audio data.
@@ -449,6 +550,7 @@ func (s *WebSocketAudioStream) Bytes() []byte {
 }
 
 // Err returns any error that occurred during iteration.
+// It is nil after a stream that finished normally and after Close.
 func (s *WebSocketAudioStream) Err() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -461,8 +563,8 @@ func (s *WebSocketAudioStream) Collect() ([]byte, error) {
 	for s.Next() {
 		buf.Write(s.Bytes())
 	}
-	if s.err != nil {
-		return nil, s.err
+	if err := s.Err(); err != nil {
+		return nil, err
 	}
 	return buf.Bytes(), nil
 }
@@ -480,24 +582,30 @@ func (s *WebSocketAudioStream) Read(p []byte) (n int, err error) {
 	}
 
 	// Try to get more data
-	select {
-	case chunk, ok := <-s.audioChan:
-		if !ok {
-			return 0, io.EOF
+	chunk, ok := s.recv()
+	if !ok {
+		if s.err != nil {
+			return 0, s.err
 		}
-		n = copy(p, chunk)
-		if n < len(chunk) {
-			s.buf = chunk[n:]
-		}
-		return n, nil
-	case err := <-s.errChan:
-		s.err = err
-		return 0, err
+		return 0, io.EOF
 	}
+	n = copy(p, chunk)
+	if n < len(chunk) {
+		s.buf = chunk[n:]
+	}
+	return n, nil
 }
 
-// Close closes the stream.
+// Close ends the stream and releases its connection. When it returns, the
+// connection is closed and the stream's goroutines have exited; Next returns
+// false. Close unblocks a Next or Read that is waiting in another goroutine.
+// It is safe to call more than once and after the stream has ended.
 func (s *WebSocketAudioStream) Close() error {
+	if s.sess != nil {
+		s.sess.shutdown(nil, true)
+		s.sess.wg.Wait()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true

@@ -376,6 +376,7 @@ func TestWebSocketAudioStream_Error(t *testing.T) {
 	audioChan := make(chan []byte, 1)
 	errChan := make(chan error, 1)
 	errChan <- io.ErrUnexpectedEOF
+	close(audioChan)
 
 	stream := &WebSocketAudioStream{
 		audioChan: audioChan,
@@ -423,6 +424,7 @@ func TestWebSocketAudioStream_CollectError(t *testing.T) {
 
 	audioChan <- []byte("data")
 	errChan <- io.ErrUnexpectedEOF
+	close(audioChan)
 
 	stream := &WebSocketAudioStream{
 		audioChan: audioChan,
@@ -503,6 +505,7 @@ func TestWebSocketAudioStream_ReadError(t *testing.T) {
 	audioChan := make(chan []byte, 1)
 	errChan := make(chan error, 1)
 	errChan <- io.ErrUnexpectedEOF
+	close(audioChan)
 
 	stream := &WebSocketAudioStream{
 		audioChan: audioChan,
