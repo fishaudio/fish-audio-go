@@ -93,7 +93,7 @@ func wsSend(conn *websocket.Conn, resp wsResponse) error {
 func requireClientGone(t *testing.T, clientGone <-chan error) {
 	t.Helper()
 	select {
-	case <-clientGone:
+	case <-clientGone: //nolint:errcheck // the value is the read error that shows the client left
 	case <-time.After(wsEndTimeout):
 		t.Error("server did not see the client close the connection")
 	}
