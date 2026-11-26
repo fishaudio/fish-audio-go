@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,10 +42,19 @@ type recorded struct {
 // on /v1/tts/live (closing them at once), and records every request's headers.
 func headerServer(t *testing.T, status int) (*httptest.Server, func() []recorded) {
 	t.Helper()
+	server, seen, _ := countingHeaderServer(t, status)
+	return server, seen
+}
+
+// countingHeaderServer is headerServer that also counts the connections
+// opened to it.
+func countingHeaderServer(t *testing.T, status int) (*httptest.Server, func() []recorded, *atomic.Int32) {
+	t.Helper()
 	var mu sync.Mutex
 	var seen []recorded
+	var conns atomic.Int32
 	upgrader := websocket.Upgrader{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		seen = append(seen, recorded{r.Method + " " + r.URL.Path, r.Header.Clone()})
 		mu.Unlock()
@@ -73,12 +83,18 @@ func headerServer(t *testing.T, status int) (*httptest.Server, func() []recorded
 			_, _ = w.Write([]byte(`{}`))
 		}
 	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	server.Start()
 	t.Cleanup(server.Close)
 	return server, func() []recorded {
 		mu.Lock()
 		defer mu.Unlock()
 		return append([]recorded(nil), seen...)
-	}
+	}, &conns
 }
 
 func dialTTS(ctx context.Context, client *Client) error {

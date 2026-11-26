@@ -17,14 +17,21 @@ import (
 // safe for concurrent use. Keep it fast: the request waits for it.
 //
 // Return nil, nil to add nothing. A non-nil error fails the call before
-// anything is sent, so a request never goes out without the provider's
-// headers; the call's error wraps it, so [errors.Is] and [errors.As] find it.
-// The SDK copies what it returns, so the provider may reuse or modify the
-// returned http.Header afterwards. Headers the SDK sets (Authorization,
-// model, User-Agent, Content-Type, Content-Length, Host, WebSocket handshake
-// headers) cannot be set and are ignored, as is any name already set with
-// [ContextWithHeaders]. A name or value that HTTP does not allow fails the
-// call with an error before anything is sent. A panic is not recovered.
+// anything is sent; the call's error wraps it, so [errors.Is] and [errors.As]
+// find it. The SDK copies what it returns, so the provider may reuse or
+// modify the returned http.Header afterwards. Headers the SDK or HTTP sets
+// (Authorization, model, User-Agent, Content-Type, Content-Length, Host,
+// Transfer-Encoding, and the WebSocket handshake's Connection, Upgrade and
+// Sec-WebSocket-*) cannot be set and are ignored whatever their value, as is
+// any name already set with [ContextWithHeaders]. A panic is not recovered.
+//
+// A header name must be an RFC 9110 token. A value must be empty, or visible
+// ASCII (0x21-0x7E) with spaces and tabs only between visible characters: no
+// leading or trailing whitespace, no control characters, no non-ASCII bytes.
+// Any other name or value fails the call before anything is sent, with an
+// error that names the header and the problem but never shows the value.
+// Every value accepted is sent exactly as given (a User-Agent from
+// [ContextWithHeaders] after the SDK's own).
 //
 // The API returns the trace id it used in the X-Fish-Trace-Id response
 // header. If the SDK sent a traceparent (from the provider or
@@ -35,9 +42,10 @@ import (
 // the likely cause; it never echoes other header values and never changes
 // the call.
 //
-// With OpenTelemetry (go.opentelemetry.io/otel/trace), this sends the span in
-// the call's ctx as traceparent and no other trace data, so you can find your
-// requests in Fish Audio's traces:
+// With OpenTelemetry (go.opentelemetry.io/otel/trace), this provider adds the
+// span in the call's ctx as a traceparent, so you can find your requests in
+// Fish Audio's traces. It adds no tracestate or baggage; an otelhttp transport,
+// if you also use one, still adds whatever its propagator sends.
 //
 //	fishaudio.WithHeaderProvider(func(ctx context.Context) (http.Header, error) {
 //		sc := trace.SpanContextFromContext(ctx)
@@ -58,6 +66,12 @@ func WithHeaderProvider(provider HeaderProvider) ClientOption {
 
 type requestHeadersKey struct{}
 
+// Sources named in the errors for headers that may not be sent.
+const (
+	providerSource = "header provider"
+	perCallSource  = "ContextWithHeaders"
+)
+
 // ContextWithHeaders returns a copy of ctx that carries headers for every
 // Fish Audio request made with it, HTTP and WebSocket alike: pass the result
 // as the ctx of a call. Calling it again on the result adds to the headers;
@@ -65,9 +79,9 @@ type requestHeadersKey struct{}
 //
 // These headers win over a [HeaderProvider]. A traceparent set here is
 // checked against the response like the provider's; see [HeaderProvider].
-// Headers the SDK sets (Authorization, model, Content-Type, Content-Length,
-// Host, WebSocket handshake headers) cannot be replaced and are ignored; a
-// User-Agent is appended to the SDK's own.
+// Headers the SDK or HTTP sets (as listed for [HeaderProvider]) cannot be
+// replaced and are ignored whatever their value; a User-Agent is appended to
+// the SDK's own. Names and values follow the rule given for [HeaderProvider].
 //
 //	ctx = fishaudio.ContextWithHeaders(ctx, http.Header{"Traceparent": {tp}})
 //	audio, err := client.TTS.Convert(ctx, &fishaudio.ConvertParams{Text: "Hello"})
@@ -117,24 +131,52 @@ func isTokenChar(c byte) bool {
 	return strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0
 }
 
-func validHeaderValue(value string) bool {
+// headerValueProblem returns "" if value may be sent, else the kind of
+// problem, for an error that names the header but never shows the value,
+// which may be a credential.
+//
+// The rule, shared with the other Fish Audio SDKs (change them together), is
+// an RFC 9110 §5.5 field value made of ASCII only. A value is valid if it is
+// empty, or if it is visible ASCII (0x21-0x7E) with spaces and tabs only
+// between visible characters. Every value it accepts reaches the server
+// byte for byte, over net/http and over the WebSocket handshake alike.
+//
+// It is stricter than net/http on purpose. net/http sends non-ASCII bytes
+// (obs-text), which RFC 9110 keeps only for compatibility and which a server
+// or proxy may reject or decode differently, and it silently trims leading
+// and trailing whitespace, so the server would not get the value as given.
+// Control characters (including CR, LF, NUL and DEL) are rejected by both.
+func headerValueProblem(value string) string {
 	for i := 0; i < len(value); i++ {
-		if c := value[i]; c < ' ' && c != '\t' || c == 0x7f {
-			return false
+		switch c := value[i]; {
+		case c >= 0x80:
+			return "a non-ASCII character"
+		case c == ' ' || c == '\t':
+			if i == 0 || i == len(value)-1 {
+				return "leading or trailing whitespace"
+			}
+		case c < 0x20 || c == 0x7f:
+			return "a control character"
 		}
 	}
-	return true
+	return ""
 }
 
-func checkHeader(source, name string, values []string) error {
-	if !validHeaderName(name) {
-		return fmt.Errorf("fishaudio: %s has an invalid header name %q", source, name)
-	}
+// checkHeaderValues returns an error for the first value of the header name
+// that may not be sent. The error names the source and the header and says
+// what is wrong, but never contains the value or any part of it.
+func checkHeaderValues(source, name string, values []string) error {
 	for _, value := range values {
-		if !validHeaderValue(value) {
-			// The value is not echoed: it may be a credential.
-			return fmt.Errorf("fishaudio: %s has an invalid value for header %q", source, name)
+		if problem := headerValueProblem(value); problem != "" {
+			return fmt.Errorf("fishaudio: %s: value of header %q has %s", source, name, problem)
 		}
+	}
+	return nil
+}
+
+func checkHeaderName(source, name string) error {
+	if !validHeaderName(name) {
+		return fmt.Errorf("fishaudio: %s: invalid header name %q", source, name)
 	}
 	return nil
 }
@@ -151,14 +193,21 @@ func (c *Client) addHeaders(ctx context.Context, header http.Header) ([]string, 
 	var traceparent []string
 	if perCall, ok := ctx.Value(requestHeadersKey{}).(http.Header); ok {
 		for name, values := range perCall {
-			if err := checkHeader("ContextWithHeaders", name, values); err != nil {
+			if err := checkHeaderName(perCallSource, name); err != nil {
 				return nil, err
 			}
-			switch {
-			case name == "User-Agent":
+			// A reserved name is ignored, whatever its value: it is skipped
+			// before its value is checked. User-Agent is appended, not
+			// ignored, so its value is checked.
+			if (reservedHeader(name) && name != "User-Agent") || len(values) == 0 {
+				continue
+			}
+			if err := checkHeaderValues(perCallSource, name, values); err != nil {
+				return nil, err
+			}
+			if name == "User-Agent" {
 				header.Set("User-Agent", userAgentWith(strings.Join(values, " ")))
-			case reservedHeader(name):
-			case len(values) > 0:
+			} else {
 				header[name] = append([]string(nil), values...)
 				if name == "Traceparent" {
 					traceparent = header[name]
@@ -176,7 +225,7 @@ func (c *Client) addHeaders(ctx context.Context, header http.Header) ([]string, 
 	// Canonical names first, so two spellings of one name cannot both be sent.
 	canonical := http.Header{}
 	for name, values := range provided {
-		if err := checkHeader("header provider", name, values); err != nil {
+		if err := checkHeaderName(providerSource, name); err != nil {
 			return nil, err
 		}
 		key := http.CanonicalHeaderKey(name)
@@ -186,8 +235,13 @@ func (c *Client) addHeaders(ctx context.Context, header http.Header) ([]string, 
 		if reservedHeader(name) || len(values) == 0 {
 			continue
 		}
+		// A name already set (by the SDK or per call) is ignored, whatever
+		// its value: it is skipped before its value is checked.
 		if _, taken := header[name]; taken {
 			continue
+		}
+		if err := checkHeaderValues(providerSource, name, values); err != nil {
+			return nil, err
 		}
 		header[name] = values
 		if name == "Traceparent" {

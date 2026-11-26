@@ -275,8 +275,7 @@ the WebSocket. Pass `WithHeaderProvider`: the SDK calls it for every request and
 every WebSocket handshake, right before sending, with the `ctx` you passed to the
 call, and adds the headers it returns. Return `nil, nil` to add nothing. If it
 returns an error, the call fails with an error that wraps it (`errors.Is` and
-`errors.As` find it) and nothing is sent: the SDK never sends a request without
-the provider's headers.
+`errors.As` find it) and nothing is sent.
 
 **OpenTelemetry.** An `otelhttp` transport (`WithHTTPClient`) covers HTTP calls but
 not the WebSocket, which does not use the HTTP client. A provider covers both. The SDK
@@ -294,13 +293,14 @@ client := fishaudio.NewClient(fishaudio.WithHeaderProvider(func(ctx context.Cont
 }))
 ```
 
-With it, the SDK sends the current trace ID to Fish Audio in a `traceparent` header
-so you can find your requests in Fish Audio's traces. It sends no other trace data
-(no `baggage`, no `tracestate`). To turn this off, leave out `WithHeaderProvider`.
+This provider adds one header, a `traceparent` with the current trace ID, so you can
+find your requests in Fish Audio's traces. It adds no `tracestate` or `baggage`; an
+`otelhttp` transport, if you also use one, adds on HTTP calls whatever its propagator
+sends, with or without the provider. To turn this off, leave out `WithHeaderProvider`.
 
 Using it together with `otelhttp` is harmless: on HTTP calls `otelhttp` replaces the
 provider's `traceparent` with its own client span's, a child of the span in `ctx`, so
-each request carries one header in one trace. If the provider sends a trace other
+each request carries one `traceparent` in one trace. If the provider sends a trace other
 than the span in `ctx` (your own trace IDs below), `otelhttp` still replaces it, and
 on HTTP calls Fish Audio sees `otelhttp`'s trace, not yours.
 
@@ -358,12 +358,18 @@ raise the level in your `slog` handler. Responses without `X-Fish-Trace-Id` (ano
 base URL, a proxy) are not checked.
 
 Rules:
-- Neither can set `Authorization`, `model`, `Content-Type`, `Content-Length`, `Host`
-  or WebSocket handshake headers; those names are ignored. A `User-Agent` from
-  `ContextWithHeaders` is appended to the SDK's; one from the provider is ignored.
-- A provider error, or a header name or value that HTTP does not allow, fails the
-  call with an error before anything is sent. A panic in the provider is not
-  recovered.
+- Neither can set `Authorization`, `model`, `Content-Type`, `Content-Length`, `Host`,
+  `Transfer-Encoding` or WebSocket handshake headers; those names are ignored, whatever
+  their value. A `User-Agent` from `ContextWithHeaders` is appended to the SDK's; one
+  from the provider is ignored.
+- A header value must be empty, or visible ASCII characters (`!` to `~`) with spaces
+  and tabs only between them (RFC 9110 field values, ASCII only): no leading or trailing
+  whitespace, no control characters, no non-ASCII text. A header name must be an
+  RFC 9110 token. Anything else fails the call before anything is sent, with an error
+  that names the header and the problem, never the value. Every value that is
+  accepted is sent exactly as given.
+- A provider error fails the call before anything is sent. A panic in the provider
+  is not recovered.
 - Concurrent calls call the provider concurrently, each with its own `ctx`; it must
   be safe for concurrent use. It runs once per request, so keep it fast.
 
