@@ -302,7 +302,8 @@ Using it together with `otelhttp` is harmless: on HTTP calls `otelhttp` replaces
 provider's `traceparent` with its own client span's, a child of the span in `ctx`, so
 each request carries one `traceparent` in one trace. If the provider sends a trace other
 than the span in `ctx` (your own trace IDs below), `otelhttp` still replaces it, and
-on HTTP calls Fish Audio sees `otelhttp`'s trace, not yours.
+on HTTP calls Fish Audio sees `otelhttp`'s trace, not yours; the SDK then logs the
+warning described below, saying that a transport in this process replaced it.
 
 **Your own trace IDs.** The API accepts only a valid `traceparent` (version `00`:
 32 lowercase hex digits of trace ID, 16 of parent ID, 2 of flags, exactly one header). Convert your IDs; an
@@ -340,7 +341,9 @@ client := fishaudio.NewClient(fishaudio.WithHeaderProvider(func(ctx context.Cont
 **No tracing.** Nothing to do.
 
 For one call, put headers on its context with `ContextWithHeaders`. They reach every
-method, the WebSocket included, and win over the provider:
+method, the WebSocket included, and win over the provider: the provider's value for a
+name set there is never sent. A name set with no values sends nothing for that name, so
+`http.Header{"Traceparent": nil}` keeps the provider's `traceparent` off one call.
 
 ```go
 ctx = fishaudio.ContextWithHeaders(ctx, http.Header{"Traceparent": {tp}})
@@ -348,30 +351,45 @@ audio, err := client.TTS.Convert(ctx, &fishaudio.ConvertParams{Text: "Hello"})
 ```
 
 **When your trace is not continued.** Fish Audio returns the trace ID it used in
-the `X-Fish-Trace-Id` response header. When the SDK sent a `traceparent` and that ID
-is not its trace ID, the SDK logs `fishaudio: the API did not continue the trace this
-SDK sent` once per process, at Warn level through `slog.Default()`, with both trace
-IDs (never other header values) and the likely cause: an invalid value, more than one
-`traceparent`, or a transport such as `otelhttp` replacing it. Fix the cause and the
-line stops; the call itself is never affected. To silence it, filter that message or
-raise the level in your `slog` handler. Responses without `X-Fish-Trace-Id` (another
-base URL, a proxy) are not checked.
+the `X-Fish-Trace-Id` response header. When the SDK set a `traceparent` and that ID
+is not its trace ID, the SDK logs `fishaudio: the trace this SDK sent is not the one
+the API used` once per process, at Warn level through `slog.Default()`, with the trace
+IDs (never other header values) and what the SDK can tell about the cause: an invalid
+value; more than one `traceparent`; an HTTP transport in this process, such as
+`otelhttp`, replacing it before the request left (then `outgoing_trace_id` is the trace
+that went out); or the request leaving this process with it unchanged, so the API did
+not use it or something on the way, such as a proxy, replaced it. If the transport
+does not return the request it sent, the SDK cannot tell the last two apart and says
+so. Fix the cause and the line stops; the call itself is never affected. To silence
+it, filter that message or raise the level in your `slog` handler. Responses without
+`X-Fish-Trace-Id` (another base URL, a proxy) are not checked.
 
 Rules:
-- Neither can set `Authorization`, `model`, `Content-Type`, `Content-Length`, `Host`,
-  `Transfer-Encoding` or WebSocket handshake headers; those names are ignored, whatever
-  their value. A `User-Agent` from `ContextWithHeaders` is appended to the SDK's; one
-  from the provider is ignored.
+- Neither can set a name the SDK or the transport owns: `Authorization`, `model`,
+  `User-Agent`, `Host`, `Cookie`, `Expect`, `Accept-Encoding`, any `Content-*` name
+  (the SDK writes the body), the hop-by-hop `Connection`, `Keep-Alive`,
+  `Proxy-Connection`, `TE`, `Trailer`, `Transfer-Encoding` and `Upgrade`, and any
+  `Sec-WebSocket-*` name. These are ignored, whatever their value: net/http, HTTP/2 or
+  the WebSocket handshake would drop, rewrite or act on them. A `User-Agent` from
+  `ContextWithHeaders` is appended to the SDK's; one from the provider is ignored.
+- Names that differ only in case (`traceparent` and `Traceparent`) are one header:
+  their values are combined in the byte order of the spellings (`Traceparent` before
+  `traceparent`), so the result never depends on map order. Two `traceparent` values
+  are then reported by the warning above.
 - A header value must be empty, or visible ASCII characters (`!` to `~`) with spaces
   and tabs only between them (RFC 9110 field values, ASCII only): no leading or trailing
   whitespace, no control characters, no non-ASCII text. A header name must be an
   RFC 9110 token. Anything else fails the call before anything is sent, with an error
-  that names the header and the problem, never the value. Every value that is
-  accepted is sent exactly as given.
+  that names the header and the problem, never the value. A name that is not ignored
+  reaches Fish Audio with every accepted value exactly as given, over HTTP/1.1, HTTP/2
+  and the WebSocket, unless an HTTP transport you add changes it.
 - A provider error fails the call before anything is sent. A panic in the provider
   is not recovered.
 - Concurrent calls call the provider concurrently, each with its own `ctx`; it must
   be safe for concurrent use. It runs once per request, so keep it fast.
+- The SDK reads the header the provider returns after the provider returns, so do not
+  modify it afterwards: return a new `http.Header` on every call, or the same one if
+  nothing ever modifies it.
 
 ## Resources
 

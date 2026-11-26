@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -18,29 +19,45 @@ import (
 //
 // Return nil, nil to add nothing. A non-nil error fails the call before
 // anything is sent; the call's error wraps it, so [errors.Is] and [errors.As]
-// find it. The SDK copies what it returns, so the provider may reuse or
-// modify the returned http.Header afterwards. Headers the SDK or HTTP sets
-// (Authorization, model, User-Agent, Content-Type, Content-Length, Host,
-// Transfer-Encoding, and the WebSocket handshake's Connection, Upgrade and
-// Sec-WebSocket-*) cannot be set and are ignored whatever their value, as is
-// any name already set with [ContextWithHeaders]. A panic is not recovered.
+// find it. A panic is not recovered.
+//
+// The SDK reads the returned http.Header after the provider returns, without
+// any lock the provider holds, so the provider must not modify that header
+// or its value slices afterwards. Building a new http.Header on every call
+// is the simple way to follow this. Returning the same header every time is
+// also fine if nothing ever modifies it: the SDK only reads it.
+//
+// Names that differ only in case (traceparent and Traceparent) are one
+// header: their values are combined in the byte order of the spellings
+// (Traceparent before traceparent), each spelling's values in the order
+// given. A name with no values adds nothing. Names the SDK or the transport
+// owns are ignored whatever their value: Authorization, model, User-Agent,
+// Host, Cookie, Expect, Accept-Encoding, every Content-* name (the SDK
+// writes the body), the hop-by-hop Connection, Keep-Alive,
+// Proxy-Connection, TE, Trailer, Transfer-Encoding and Upgrade, and every
+// Sec-WebSocket-* name. So is any name set with [ContextWithHeaders], with or
+// without values.
 //
 // A header name must be an RFC 9110 token. A value must be empty, or visible
 // ASCII (0x21-0x7E) with spaces and tabs only between visible characters: no
 // leading or trailing whitespace, no control characters, no non-ASCII bytes.
 // Any other name or value fails the call before anything is sent, with an
 // error that names the header and the problem but never shows the value.
-// Every value accepted is sent exactly as given (a User-Agent from
-// [ContextWithHeaders] after the SDK's own).
+// Every name that is not ignored reaches the server with every value
+// accepted exactly as given, over HTTP/1.1, HTTP/2 and the WebSocket
+// handshake alike (a User-Agent from [ContextWithHeaders] after the SDK's
+// own), unless an HTTP transport you configure changes it.
 //
 // The API returns the trace id it used in the X-Fish-Trace-Id response
-// header. If the SDK sent a traceparent (from the provider or
-// [ContextWithHeaders]) and the response names a different trace, the API
-// did not continue it: the value was invalid, more than one was sent, or a
-// transport replaced it. The SDK then logs one warning per process at
-// [log/slog.LevelWarn] through [log/slog.Default], with both trace ids and
-// the likely cause; it never echoes other header values and never changes
-// the call.
+// header. If the SDK set a traceparent (from the provider or
+// [ContextWithHeaders]) and the response names a different trace, the SDK
+// logs one warning per process at [log/slog.LevelWarn] through
+// [log/slog.Default], with the trace ids and what the SDK can tell about
+// the cause: the value was invalid, more than one was set, a transport in
+// this process (such as otelhttp) replaced it before sending, or it left
+// this process unchanged and the API did not use it or a proxy on the way
+// replaced it. It never echoes other header values and never changes the
+// call.
 //
 // With OpenTelemetry (go.opentelemetry.io/otel/trace), this provider adds the
 // span in the call's ctx as a traceparent, so you can find your requests in
@@ -77,11 +94,15 @@ const (
 // as the ctx of a call. Calling it again on the result adds to the headers;
 // a name set again replaces the earlier values.
 //
-// These headers win over a [HeaderProvider]. A traceparent set here is
-// checked against the response like the provider's; see [HeaderProvider].
-// Headers the SDK or HTTP sets (as listed for [HeaderProvider]) cannot be
-// replaced and are ignored whatever their value; a User-Agent is appended to
-// the SDK's own. Names and values follow the rule given for [HeaderProvider].
+// These headers win over a [HeaderProvider]: the provider's value for a name
+// set here is never sent. A name set with no values (nil or an empty slice)
+// sends nothing for that name, so it keeps the provider's value off this
+// call. Names that differ only in case are one header, combined as described
+// for [HeaderProvider]. A traceparent set here is checked against the
+// response like the provider's; see [HeaderProvider]. Names the SDK or the
+// transport owns (as listed for [HeaderProvider]) cannot be replaced and are
+// ignored whatever their value, except that a User-Agent is appended to the
+// SDK's own. Names and values follow the rule given for [HeaderProvider].
 //
 //	ctx = fishaudio.ContextWithHeaders(ctx, http.Header{"Traceparent": {tp}})
 //	audio, err := client.TTS.Convert(ctx, &fishaudio.ConvertParams{Text: "Hello"})
@@ -92,22 +113,62 @@ func ContextWithHeaders(ctx context.Context, headers http.Header) context.Contex
 			merged[name] = values
 		}
 	}
-	for name, values := range headers {
-		merged[http.CanonicalHeaderKey(name)] = append([]string(nil), values...)
+	for name, values := range canonicalHeader(headers) {
+		merged[name] = values
 	}
 	return context.WithValue(ctx, requestHeadersKey{}, merged)
 }
 
-// reservedHeader reports whether name is a header the SDK sets itself or that
-// HTTP and the WebSocket handshake own. Neither a provider nor per-call
-// headers can set it, so neither can replace the API key or the model.
+// sortedNames returns the names in h in byte order, so that everything done
+// name by name (combining spellings, choosing which error to return) does
+// not depend on map iteration order.
+func sortedNames(h http.Header) []string {
+	names := make([]string, 0, len(h))
+	for name := range h {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// canonicalHeader returns a copy of h keyed by canonical names. The values of
+// names that differ only in case are combined in the byte order of the
+// spellings, so the result never depends on map iteration order. A name with
+// no values stays in the result with none. The value slices are new, so
+// nothing done to the result can change h, and the reverse.
+func canonicalHeader(h http.Header) http.Header {
+	out := make(http.Header, len(h))
+	for _, name := range sortedNames(h) {
+		key := http.CanonicalHeaderKey(name)
+		out[key] = append(out[key], h[name]...)
+	}
+	return out
+}
+
+// reservedHeader reports whether canonical is a header name the SDK or the
+// transport owns. Neither a provider nor per-call headers can set it, so
+// neither can replace the API key or the model, nor send a header that
+// net/http, its HTTP/2 transport or the WebSocket handshake would drop,
+// rewrite or act on. TestHeaderNames_EveryNameOnEveryPath sends every name
+// these treat specially over every path, so a change here is checked.
 func reservedHeader(canonical string) bool {
 	switch canonical {
-	case "Authorization", "Model", "User-Agent", "Content-Type", "Content-Length",
-		"Host", "Connection", "Upgrade", "Transfer-Encoding":
+	// Set by the SDK.
+	case "Authorization", "Model", "User-Agent",
+		// Owned by the transport: Host is the URL's; Request.Write never
+		// sends Trailer from the header map; Expect and Accept-Encoding
+		// change how the transport sends the body and reads the response;
+		// Cookie belongs to a cookie jar, and HTTP/2 splits it and so
+		// changes its bytes.
+		"Host", "Trailer", "Expect", "Accept-Encoding", "Cookie",
+		// Hop-by-hop (RFC 9110 §7.6.1): not end to end, and HTTP/2 drops
+		// them or fails the request.
+		"Connection", "Keep-Alive", "Proxy-Connection", "Te", "Transfer-Encoding", "Upgrade":
 		return true
 	}
-	return strings.HasPrefix(canonical, "Sec-Websocket-")
+	// Content-* describes the body, which the SDK writes; Sec-WebSocket-*
+	// belongs to the WebSocket handshake.
+	return strings.HasPrefix(canonical, "Content-") || strings.HasPrefix(canonical, "Sec-Websocket-")
 }
 
 func validHeaderName(name string) bool {
@@ -138,8 +199,13 @@ func isTokenChar(c byte) bool {
 // The rule, shared with the other Fish Audio SDKs (change them together), is
 // an RFC 9110 §5.5 field value made of ASCII only. A value is valid if it is
 // empty, or if it is visible ASCII (0x21-0x7E) with spaces and tabs only
-// between visible characters. Every value it accepts reaches the server
-// byte for byte, over net/http and over the WebSocket handshake alike.
+// between visible characters. Every value it accepts, under a name that is not
+// reserved, reaches the server byte for byte, over net/http (HTTP/1.1 and
+// HTTP/2) and over the WebSocket handshake alike.
+//
+// When a value has more than one problem, the one reported is, in this
+// order and wherever the bytes are: a control character, a non-ASCII
+// character, leading or trailing whitespace.
 //
 // It is stricter than net/http on purpose. net/http sends non-ASCII bytes
 // (obs-text), which RFC 9110 keeps only for compatibility and which a server
@@ -147,20 +213,27 @@ func isTokenChar(c byte) bool {
 // and trailing whitespace, so the server would not get the value as given.
 // Control characters (including CR, LF, NUL and DEL) are rejected by both.
 func headerValueProblem(value string) string {
+	var control, nonASCII bool
 	for i := 0; i < len(value); i++ {
 		switch c := value[i]; {
 		case c >= 0x80:
-			return "a non-ASCII character"
-		case c == ' ' || c == '\t':
-			if i == 0 || i == len(value)-1 {
-				return "leading or trailing whitespace"
-			}
-		case c < 0x20 || c == 0x7f:
-			return "a control character"
+			nonASCII = true
+		case c < 0x20 && c != '\t' || c == 0x7f:
+			control = true
 		}
+	}
+	switch {
+	case control:
+		return "a control character"
+	case nonASCII:
+		return "a non-ASCII character"
+	case value != "" && (isSpaceOrTab(value[0]) || isSpaceOrTab(value[len(value)-1])):
+		return "leading or trailing whitespace"
 	}
 	return ""
 }
+
+func isSpaceOrTab(c byte) bool { return c == ' ' || c == '\t' }
 
 // checkHeaderValues returns an error for the first value of the header name
 // that may not be sent. The error names the source and the header and says
@@ -185,33 +258,39 @@ func checkHeaderName(source, name string) error {
 // provider's, to header, which already holds the SDK's own headers. Every
 // request and WebSocket handshake calls it right before sending, so the
 // provider sees the caller's ctx at that moment. (A retry loop added later
-// must call it once per attempt.)
+// must call it once per attempt.) Names are handled in byte order, so the
+// error returned for several bad headers is always the same one.
 //
 // It returns the Traceparent values it put on header, nil if it put none, for
 // [checkTrace] to compare with the response.
 func (c *Client) addHeaders(ctx context.Context, header http.Header) ([]string, error) {
 	var traceparent []string
-	if perCall, ok := ctx.Value(requestHeadersKey{}).(http.Header); ok {
-		for name, values := range perCall {
-			if err := checkHeaderName(perCallSource, name); err != nil {
-				return nil, err
-			}
-			// A reserved name is ignored, whatever its value: it is skipped
-			// before its value is checked. User-Agent is appended, not
-			// ignored, so its value is checked.
-			if (reservedHeader(name) && name != "User-Agent") || len(values) == 0 {
-				continue
-			}
-			if err := checkHeaderValues(perCallSource, name, values); err != nil {
-				return nil, err
-			}
-			if name == "User-Agent" {
-				header.Set("User-Agent", userAgentWith(strings.Join(values, " ")))
-			} else {
-				header[name] = append([]string(nil), values...)
-				if name == "Traceparent" {
-					traceparent = header[name]
-				}
+	// Keyed by canonical name already (see ContextWithHeaders).
+	perCall, _ := ctx.Value(requestHeadersKey{}).(http.Header)
+	for _, name := range sortedNames(perCall) {
+		values := perCall[name]
+		if err := checkHeaderName(perCallSource, name); err != nil {
+			return nil, err
+		}
+		// A reserved name is ignored, whatever its value: it is skipped
+		// before its value is checked. User-Agent is appended, not ignored,
+		// so its value is checked.
+		if reservedHeader(name) && name != "User-Agent" {
+			continue
+		}
+		if err := checkHeaderValues(perCallSource, name, values); err != nil {
+			return nil, err
+		}
+		switch {
+		case len(values) == 0:
+			// Nothing is sent for this name, and the provider's value is
+			// not sent either: the name is in perCall, checked below.
+		case name == "User-Agent":
+			header.Set("User-Agent", userAgentWith(strings.Join(values, " ")))
+		default:
+			header[name] = append([]string(nil), values...)
+			if name == "Traceparent" {
+				traceparent = header[name]
 			}
 		}
 	}
@@ -222,22 +301,26 @@ func (c *Client) addHeaders(ctx context.Context, header http.Header) ([]string, 
 	if err != nil {
 		return nil, fmt.Errorf("fishaudio: header provider: %w", err)
 	}
-	// Canonical names first, so two spellings of one name cannot both be sent.
-	canonical := http.Header{}
-	for name, values := range provided {
+	for _, name := range sortedNames(provided) {
 		if err := checkHeaderName(providerSource, name); err != nil {
 			return nil, err
 		}
-		key := http.CanonicalHeaderKey(name)
-		canonical[key] = append(canonical[key], values...)
 	}
-	for name, values := range canonical {
+	// Canonical names, so two spellings of one name cannot both be sent; the
+	// values are copies, so the SDK never writes into the provider's header.
+	canonical := canonicalHeader(provided)
+	for _, name := range sortedNames(canonical) {
+		values := canonical[name]
 		if reservedHeader(name) || len(values) == 0 {
 			continue
 		}
-		// A name already set (by the SDK or per call) is ignored, whatever
-		// its value: it is skipped before its value is checked.
+		// A name already set by the SDK, or given per call with or without
+		// values, is ignored, whatever its value: it is skipped before its
+		// value is checked.
 		if _, taken := header[name]; taken {
+			continue
+		}
+		if _, taken := perCall[name]; taken {
 			continue
 		}
 		if err := checkHeaderValues(providerSource, name, values); err != nil {

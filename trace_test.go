@@ -201,13 +201,17 @@ func TestTraceWarning_EveryPathWarnsWhenNotContinued(t *testing.T) {
 				continue
 			}
 			rec := got[0]
-			if rec.level != slog.LevelWarn || rec.msg != "fishaudio: the API did not continue the trace this SDK sent" {
+			if rec.level != slog.LevelWarn || rec.msg != "fishaudio: the trace this SDK sent is not the one the API used" {
 				t.Errorf("%s: %v %q", path.name, rec.level, rec.msg)
 			}
 			if rec.attrs["sent_trace_id"] != traceA[3:35] || rec.attrs["api_trace_id"] != freshTraceID {
 				t.Errorf("%s: attrs %v", path.name, rec.attrs)
 			}
-			if !strings.Contains(rec.attrs["hint"], "otelhttp") ||
+			// The request left the process unchanged, which the SDK can see.
+			if _, ok := rec.attrs["outgoing_trace_id"]; ok {
+				t.Errorf("%s: outgoing_trace_id %q for a request that left unchanged", path.name, rec.attrs["outgoing_trace_id"])
+			}
+			if !strings.Contains(rec.attrs["hint"], "left this process carrying the trace this SDK set, so the API did not use it") ||
 				!strings.Contains(rec.attrs["hint"], "https://docs.fish.audio/api-reference/observability") {
 				t.Errorf("%s: hint %q", path.name, rec.attrs["hint"])
 			}
@@ -361,5 +365,97 @@ func TestTraceIDOf(t *testing.T) {
 		if got != want || ok != (want != "") {
 			t.Errorf("traceIDOf(%q) = %q, %v; want %q", value, got, ok, want)
 		}
+	}
+}
+
+// replacingTransport does what otelhttp's Transport does: it clones the
+// request and sets its own traceparent on the clone before passing it on.
+type replacingTransport struct {
+	traceparent string
+	next        http.RoundTripper
+}
+
+func (r replacingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.Header.Set("Traceparent", r.traceparent)
+	return r.next.RoundTrip(req)
+}
+
+// hidingTransport returns responses without the request that was sent.
+type hidingTransport struct{ next http.RoundTripper }
+
+func (h hidingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := h.next.RoundTrip(req)
+	if resp != nil {
+		resp.Request = nil
+	}
+	return resp, err
+}
+
+func TestTraceWarning_ReplacedInThisProcessIsToldApart(t *testing.T) {
+	const childOfA = "00-4bf92f3577b34da6a3ce929d0e0e4736-b7ad6b7169203331-01"
+	cases := []struct {
+		name      string
+		mode      traceMode
+		transport func(http.RoundTripper) http.RoundTripper
+		outgoing  string // the outgoing_trace_id attribute, "" if absent
+		api       string
+		hint      string
+	}{
+		{
+			name:      "a transport replaced it with another trace; the API used that",
+			mode:      continueTrace,
+			transport: func(next http.RoundTripper) http.RoundTripper { return replacingTransport{traceB, next} },
+			outgoing:  traceB[3:35],
+			api:       traceB[3:35],
+			hint:      "an HTTP transport in this process, such as otelhttp, replaced the traceparent",
+		},
+		{
+			name:      "a transport put in a child span of the same trace; the API did not use it",
+			mode:      newTrace,
+			transport: func(next http.RoundTripper) http.RoundTripper { return replacingTransport{childOfA, next} },
+			api:       freshTraceID,
+			hint:      "left this process carrying the trace this SDK set, so the API did not use it",
+		},
+		{
+			name:      "unchanged; the API did not use it",
+			mode:      newTrace,
+			transport: func(next http.RoundTripper) http.RoundTripper { return next },
+			api:       freshTraceID,
+			hint:      "left this process carrying the trace this SDK set, so the API did not use it",
+		},
+		{
+			name:      "the SDK cannot see what was sent",
+			mode:      newTrace,
+			transport: func(next http.RoundTripper) http.RoundTripper { return hidingTransport{next} },
+			api:       freshTraceID,
+			hint:      "cannot tell whether a transport in this process, such as otelhttp, replaced the traceparent, or the API did not use it",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := captureTraceWarnings(t)
+			server := traceGateway(t, tc.mode, http.StatusOK)
+			client := NewClient(WithAPIKey("k"), WithBaseURL(server.URL), WithHeaderProvider(sendTrace(traceA)),
+				WithHTTPClient(&http.Client{Transport: tc.transport(http.DefaultTransport)}))
+			if _, err := client.Account.GetCredits(context.Background(), nil); err != nil {
+				t.Fatal(err)
+			}
+			got := logs.take()
+			if len(got) != 1 {
+				t.Fatalf("%d log records, want 1: %v", len(got), got)
+			}
+			rec := got[0]
+			if rec.msg != "fishaudio: the trace this SDK sent is not the one the API used" ||
+				rec.attrs["sent_trace_id"] != traceA[3:35] || rec.attrs["api_trace_id"] != tc.api ||
+				rec.attrs["outgoing_trace_id"] != tc.outgoing || !strings.Contains(rec.attrs["hint"], tc.hint) {
+				t.Errorf("logged %q %v", rec.msg, rec.attrs)
+			}
+			for _, blame := range []string{"API did not continue", "did not accept"} {
+				if strings.Contains(rec.msg, blame) {
+					t.Errorf("message %q assigns blame", rec.msg)
+				}
+			}
+		})
 	}
 }

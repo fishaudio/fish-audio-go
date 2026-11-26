@@ -406,23 +406,6 @@ func TestHeaderProvider_PanicIsNotRecoveredAndNothingIsSent(t *testing.T) {
 	}
 }
 
-func TestHeaderProvider_ResultIsCopied(t *testing.T) {
-	server, seen := headerServer(t, http.StatusOK)
-	shared := http.Header{"Traceparent": {traceA}}
-	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL),
-		WithHeaderProvider(func(context.Context) (http.Header, error) { return shared, nil }))
-
-	ctx := ContextWithHeaders(context.Background(), http.Header{"X-Id": {"1"}})
-	_, _ = client.Account.GetCredits(ctx, nil)
-	shared.Set("Traceparent", traceB)
-	_, _ = client.Account.GetCredits(ctx, nil)
-
-	got := seen()
-	if got[0].header.Get("Traceparent") != traceA || got[1].header.Get("Traceparent") != traceB {
-		t.Errorf("traceparents %q, %q", got[0].header.Get("Traceparent"), got[1].header.Get("Traceparent"))
-	}
-}
-
 func TestContextWithHeaders_MergesAndCopies(t *testing.T) {
 	h := http.Header{"x-a": {"1"}}
 	ctx := ContextWithHeaders(context.Background(), h)
@@ -447,6 +430,204 @@ func TestHeaderProvider_WithoutOneNothingChanges(t *testing.T) {
 	for _, r := range seen() {
 		if _, ok := r.header["Traceparent"]; ok {
 			t.Errorf("%s: traceparent sent", r.key)
+		}
+	}
+}
+
+// inPlaceAppender is a transport that appends to the request's own value
+// slices instead of copying them, as a careless transport might. If the SDK
+// put the provider's slices on the request, this would write into the
+// provider's header.
+type inPlaceAppender struct{ next http.RoundTripper }
+
+func (a inPlaceAppender) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.Header["X-Shared"] = append(req.Header["X-Shared"], "added")
+	return a.next.RoundTrip(req)
+}
+
+// TestHeaderProvider_ContractFollowingProvidersAreRaceFree runs, under -race,
+// the two providers the documentation allows: one that builds a new header on
+// every call, and one that returns the same header every time and never
+// modifies it. Neither may race with the SDK, and the SDK must never write
+// into the shared one.
+func TestHeaderProvider_ContractFollowingProvidersAreRaceFree(t *testing.T) {
+	shared := http.Header{"X-Shared": make([]string, 1, 8)}
+	shared["X-Shared"][0] = "v"
+	providers := map[string]HeaderProvider{
+		"new header per call": fromContext,
+		"shared, never modified": func(context.Context) (http.Header, error) {
+			return shared, nil
+		},
+	}
+	for name, provider := range providers {
+		t.Run(name, func(t *testing.T) {
+			server, seen := headerServer(t, http.StatusOK)
+			client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL), WithHeaderProvider(provider),
+				WithHTTPClient(&http.Client{Transport: inPlaceAppender{server.Client().Transport}}))
+			var wg sync.WaitGroup
+			for i := 0; i < 32; i++ {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					ctx := context.WithValue(context.Background(), traceKey{}, traceFor(i))
+					var err error
+					if i%4 == 0 {
+						err = dialTTS(ctx, client)
+					} else {
+						_, err = client.Account.GetCredits(ctx, nil)
+					}
+					if err != nil {
+						t.Error(err)
+					}
+				}(i)
+			}
+			wg.Wait()
+			if n := len(seen()); n != 32 {
+				t.Errorf("%d requests, want 32", n)
+			}
+		})
+	}
+	if got := shared["X-Shared"]; len(got) != 1 || got[0] != "v" || got[:2][1] != "" {
+		t.Errorf("the SDK wrote into the provider's header: %q (backing %q)", got, got[:2])
+	}
+}
+
+func TestContextWithHeaders_NameWithNoValuesKeepsTheProvidersOff(t *testing.T) {
+	logs := captureTraceWarnings(t)
+	server := traceGateway(t, newTrace, http.StatusOK)
+	var seen []http.Header
+	var mu sync.Mutex
+	record := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		mu.Lock()
+		seen = append(seen, req.Header.Clone())
+		mu.Unlock()
+		return http.DefaultTransport.RoundTrip(req)
+	})
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL), WithHTTPClient(&http.Client{Transport: record}),
+		WithHeaderProvider(func(context.Context) (http.Header, error) {
+			return http.Header{"Traceparent": {traceA}, "X-Other": {"kept"}, "User-Agent": {"evil/1"}}, nil
+		}))
+	layered := ContextWithHeaders(context.Background(), http.Header{"Traceparent": {traceB}})
+	for name, ctx := range map[string]context.Context{
+		"nil":                     ContextWithHeaders(context.Background(), http.Header{"Traceparent": nil}),
+		"empty slice":             ContextWithHeaders(context.Background(), http.Header{"traceparent": {}}),
+		"empty over an earlier":   ContextWithHeaders(layered, http.Header{"Traceparent": nil}),
+		"empty User-Agent":        ContextWithHeaders(context.Background(), http.Header{"Traceparent": nil, "User-Agent": nil}),
+		"empty reserved name too": ContextWithHeaders(context.Background(), http.Header{"Traceparent": {}, "Authorization": nil}),
+	} {
+		mu.Lock()
+		seen = nil
+		mu.Unlock()
+		if _, err := client.Account.GetCredits(ctx, nil); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		mu.Lock()
+		got := seen
+		mu.Unlock()
+		if len(got) != 1 {
+			t.Fatalf("%s: %d requests", name, len(got))
+		}
+		h := got[0]
+		if _, ok := h["Traceparent"]; ok {
+			t.Errorf("%s: traceparent %q sent, want none", name, h["Traceparent"])
+		}
+		if h.Get("X-Other") != "kept" || h.Get("User-Agent") != userAgent || h.Get("Authorization") != "Bearer test-key" {
+			t.Errorf("%s: headers %q", name, h)
+		}
+	}
+	// The WebSocket handshake too.
+	wsServer, wsSeen := headerServer(t, http.StatusOK)
+	wsClient := NewClient(WithAPIKey("test-key"), WithBaseURL(wsServer.URL), WithHeaderProvider(sendTrace(traceA)))
+	if err := dialTTS(ContextWithHeaders(context.Background(), http.Header{"Traceparent": nil}), wsClient); err != nil {
+		t.Fatal(err)
+	}
+	if got := wsSeen(); len(got) != 1 || got[0].header["Traceparent"] != nil {
+		t.Errorf("WebSocket: %v", got)
+	}
+	// Nothing was sent, so nothing is compared.
+	if got := logs.take(); len(got) != 0 {
+		t.Errorf("logged %v", got)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestHeaderNames_CaseVariantsCombineInByteOrderOfTheSpelling(t *testing.T) {
+	mixed := http.Header{
+		"traceparent": {traceA},
+		"Traceparent": {traceB},
+		"x-id":        {"2"},
+		"X-Id":        {"1"},
+		"X-ID":        {"0", "0b"},
+	}
+	// Byte order of the spellings: "Traceparent" < "traceparent" and
+	// "X-ID" < "X-Id" < "x-id".
+	wantTrace := []string{traceB, traceA}
+	wantID := []string{"0", "0b", "1", "2"}
+	for _, source := range headerSources {
+		for _, path := range headerPaths {
+			opts := []ClientOption{WithAPIKey("k")}
+			ctx := context.Background()
+			if source == providerSource {
+				opts = append(opts, WithHeaderProvider(func(context.Context) (http.Header, error) { return mixed, nil }))
+			} else {
+				ctx = ContextWithHeaders(ctx, mixed)
+			}
+			call := func(client *Client) error {
+				if path == "ws" {
+					return dialTTS(ctx, client)
+				}
+				_, err := client.Account.GetCredits(ctx, nil)
+				return err
+			}
+
+			server, seen := headerServer(t, http.StatusOK)
+			client := NewClient(append(opts, WithBaseURL(server.URL))...)
+			for i := 0; i < 100; i++ {
+				if err := call(client); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i, r := range seen() {
+				if fmt.Sprint(r.header["Traceparent"]) != fmt.Sprint(wantTrace) || fmt.Sprint(r.header["X-Id"]) != fmt.Sprint(wantID) {
+					t.Fatalf("%s/%s call %d: traceparent %q, X-Id %q; want %q, %q",
+						source, path, i, r.header["Traceparent"], r.header["X-Id"], wantTrace, wantID)
+				}
+			}
+
+			// Two traceparent values: the existing warning reports them.
+			logs := captureTraceWarnings(t)
+			gateway := traceGateway(t, continueTrace, http.StatusOK)
+			if err := call(NewClient(append(opts, WithBaseURL(gateway.URL))...)); err != nil {
+				t.Fatal(err)
+			}
+			recs := logs.take()
+			if len(recs) != 1 || recs[0].attrs["sent_trace_id"] != "(2 traceparent values)" ||
+				!strings.Contains(recs[0].attrs["hint"], "2 traceparent headers") {
+				t.Errorf("%s/%s: logged %v", source, path, recs)
+			}
+		}
+	}
+}
+
+func TestHeaderNames_ErrorDoesNotDependOnMapOrder(t *testing.T) {
+	bad := http.Header{"X-B": {"\x01"}, "X-A": {"é"}, "X-C": {" c"}}
+	for _, source := range headerSources {
+		opts := []ClientOption{WithAPIKey("k")}
+		ctx := context.Background()
+		if source == providerSource {
+			opts = append(opts, WithHeaderProvider(func(context.Context) (http.Header, error) { return bad, nil }))
+		} else {
+			ctx = ContextWithHeaders(ctx, bad)
+		}
+		client := NewClient(opts...)
+		want := "fishaudio: " + source + `: value of header "X-A" has a non-ASCII character`
+		for i := 0; i < 200; i++ {
+			if _, err := client.addHeaders(ctx, http.Header{}); err == nil || err.Error() != want {
+				t.Fatalf("%s run %d: err = %v, want %q", source, i, err, want)
+			}
 		}
 	}
 }
