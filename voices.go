@@ -291,7 +291,7 @@ func (s *VoicesService) Create(ctx context.Context, params *CreateVoiceParams) (
 
 	req.Header.Set("Authorization", "Bearer "+s.client.apiKey)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("User-Agent", "fish-audio/go/"+Version)
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := s.client.httpClient.Do(req)
 	if err != nil {
@@ -369,7 +369,7 @@ func (s *VoicesService) Update(ctx context.Context, voiceID string, params *Upda
 
 	req.Header.Set("Authorization", "Bearer "+s.client.apiKey)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("User-Agent", "fish-audio/go/"+Version)
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := s.client.httpClient.Do(req)
 	if err != nil {
