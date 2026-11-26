@@ -273,7 +273,10 @@ Fish Audio continues your distributed trace when a request carries a W3C
 [`traceparent`](https://www.w3.org/TR/trace-context/) header, on HTTP calls and on
 the WebSocket. Pass `WithHeaderProvider`: the SDK calls it for every request and
 every WebSocket handshake, right before sending, with the `ctx` you passed to the
-call, and adds the headers it returns.
+call, and adds the headers it returns. Return `nil, nil` to add nothing. If it
+returns an error, the call fails with an error that wraps it (`errors.Is` and
+`errors.As` find it) and nothing is sent: the SDK never sends a request without
+the provider's headers.
 
 **OpenTelemetry.** An `otelhttp` transport (`WithHTTPClient`) covers HTTP calls but
 not the WebSocket, which does not use the HTTP client. A provider covers both. The SDK
@@ -282,12 +285,12 @@ does not import OpenTelemetry, so add it yourself:
 ```go
 import "go.opentelemetry.io/otel/trace"
 
-client := fishaudio.NewClient(fishaudio.WithHeaderProvider(func(ctx context.Context) http.Header {
+client := fishaudio.NewClient(fishaudio.WithHeaderProvider(func(ctx context.Context) (http.Header, error) {
 	sc := trace.SpanContextFromContext(ctx) // the span in the call's ctx
 	if !sc.IsValid() {
-		return nil
+		return nil, nil // no span: no header
 	}
-	return http.Header{"Traceparent": {fmt.Sprintf("00-%s-%s-%s", sc.TraceID(), sc.SpanID(), sc.TraceFlags())}}
+	return http.Header{"Traceparent": {fmt.Sprintf("00-%s-%s-%s", sc.TraceID(), sc.SpanID(), sc.TraceFlags())}}, nil
 }))
 ```
 
@@ -320,15 +323,15 @@ func toTraceparent(traceID, spanID string) string {
 	return "00-" + trace + "-" + span + "-01" // 01: sampled
 }
 
-client := fishaudio.NewClient(fishaudio.WithHeaderProvider(func(ctx context.Context) http.Header {
+client := fishaudio.NewClient(fishaudio.WithHeaderProvider(func(ctx context.Context) (http.Header, error) {
 	req, ok := ctx.Value(requestKey{}).(*MyRequest) // set by your middleware
 	if !ok {
-		return nil // no header is added
+		return nil, nil // no header is added
 	}
 	if tp := toTraceparent(req.TraceID, req.SpanID); tp != "" {
-		return http.Header{"Traceparent": {tp}}
+		return http.Header{"Traceparent": {tp}}, nil
 	}
-	return nil
+	return nil, nil
 }))
 ```
 
@@ -346,8 +349,9 @@ Rules:
 - Neither can set `Authorization`, `model`, `Content-Type`, `Content-Length`, `Host`
   or WebSocket handshake headers; those names are ignored. A `User-Agent` from
   `ContextWithHeaders` is appended to the SDK's; one from the provider is ignored.
-- A header name or value that HTTP does not allow fails the call with an error
-  before anything is sent. A panic in the provider is not recovered.
+- A provider error, or a header name or value that HTTP does not allow, fails the
+  call with an error before anything is sent. A panic in the provider is not
+  recovered.
 - Concurrent calls call the provider concurrently, each with its own `ctx`; it must
   be safe for concurrent use. It runs once per request, so keep it fast.
 

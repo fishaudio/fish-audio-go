@@ -16,26 +16,28 @@ import (
 // passed to that call. Concurrent calls call it concurrently, so it must be
 // safe for concurrent use. Keep it fast: the request waits for it.
 //
-// Return nil to add nothing. The SDK copies what it returns, so the provider
-// may reuse or modify the returned http.Header afterwards. Headers the SDK
-// sets (Authorization, model, User-Agent, Content-Type, Content-Length, Host,
-// WebSocket handshake headers) cannot be set and are ignored, as is any name
-// already set with [ContextWithHeaders]. A name or value that HTTP does not
-// allow fails the call with an error before anything is sent. A panic is not
-// recovered.
+// Return nil, nil to add nothing. A non-nil error fails the call before
+// anything is sent, so a request never goes out without the provider's
+// headers; the call's error wraps it, so [errors.Is] and [errors.As] find it.
+// The SDK copies what it returns, so the provider may reuse or modify the
+// returned http.Header afterwards. Headers the SDK sets (Authorization,
+// model, User-Agent, Content-Type, Content-Length, Host, WebSocket handshake
+// headers) cannot be set and are ignored, as is any name already set with
+// [ContextWithHeaders]. A name or value that HTTP does not allow fails the
+// call with an error before anything is sent. A panic is not recovered.
 //
 // With OpenTelemetry (go.opentelemetry.io/otel/trace), this sends the span in
 // the call's ctx as traceparent and no other trace data, so you can find your
 // requests in Fish Audio's traces:
 //
-//	fishaudio.WithHeaderProvider(func(ctx context.Context) http.Header {
+//	fishaudio.WithHeaderProvider(func(ctx context.Context) (http.Header, error) {
 //		sc := trace.SpanContextFromContext(ctx)
 //		if !sc.IsValid() {
-//			return nil
+//			return nil, nil
 //		}
-//		return http.Header{"Traceparent": {fmt.Sprintf("00-%s-%s-%s", sc.TraceID(), sc.SpanID(), sc.TraceFlags())}}
+//		return http.Header{"Traceparent": {fmt.Sprintf("00-%s-%s-%s", sc.TraceID(), sc.SpanID(), sc.TraceFlags())}}, nil
 //	})
-type HeaderProvider func(ctx context.Context) http.Header
+type HeaderProvider func(ctx context.Context) (http.Header, error)
 
 // WithHeaderProvider sets a function the SDK calls for every request and
 // WebSocket handshake to add headers. See [HeaderProvider].
@@ -150,7 +152,10 @@ func (c *Client) addHeaders(ctx context.Context, header http.Header) error {
 	if c.headerProvider == nil {
 		return nil
 	}
-	provided := c.headerProvider(ctx)
+	provided, err := c.headerProvider(ctx)
+	if err != nil {
+		return fmt.Errorf("fishaudio: header provider: %w", err)
+	}
 	// Canonical names first, so two spellings of one name cannot both be sent.
 	canonical := http.Header{}
 	for name, values := range provided {

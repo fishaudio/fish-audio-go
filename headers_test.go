@@ -2,6 +2,7 @@ package fishaudio
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -23,12 +24,12 @@ type traceKey struct{}
 func traceFor(i int) string { return fmt.Sprintf("00-%032x-00f067aa0ba902b7-01", i) }
 
 // fromContext is a provider that reads the trace from the call's ctx.
-func fromContext(ctx context.Context) http.Header {
+func fromContext(ctx context.Context) (http.Header, error) {
 	tp, _ := ctx.Value(traceKey{}).(string)
 	if tp == "" {
-		return nil
+		return nil, nil
 	}
-	return http.Header{"Traceparent": {tp}}
+	return http.Header{"Traceparent": {tp}}, nil
 }
 
 type recorded struct {
@@ -94,7 +95,7 @@ func TestHeaderProvider_EveryPathOncePerRequestWithTheCallsContext(t *testing.T)
 	server, seen := headerServer(t, http.StatusOK)
 	var calls atomic.Int32
 	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL),
-		WithHeaderProvider(func(ctx context.Context) http.Header {
+		WithHeaderProvider(func(ctx context.Context) (http.Header, error) {
 			calls.Add(1)
 			return fromContext(ctx)
 		}))
@@ -134,9 +135,9 @@ func TestHeaderProvider_CalledOnceForAFailingRequest(t *testing.T) {
 	server, seen := headerServer(t, http.StatusInternalServerError)
 	var calls atomic.Int32
 	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL),
-		WithHeaderProvider(func(ctx context.Context) http.Header {
+		WithHeaderProvider(func(ctx context.Context) (http.Header, error) {
 			calls.Add(1)
-			return http.Header{"Traceparent": {traceA}}
+			return http.Header{"Traceparent": {traceA}}, nil
 		}))
 
 	if _, err := client.TTS.Convert(context.Background(), &ConvertParams{Text: "hi"}); err == nil {
@@ -187,7 +188,7 @@ func TestHeaderProvider_ConcurrentCallsEachSendTheirOwnContext(t *testing.T) {
 func TestHeaderProvider_PrecedenceAndSDKHeaders(t *testing.T) {
 	server, seen := headerServer(t, http.StatusOK)
 	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL),
-		WithHeaderProvider(func(ctx context.Context) http.Header {
+		WithHeaderProvider(func(ctx context.Context) (http.Header, error) {
 			return http.Header{
 				"traceparent":       {traceA},
 				"Baggage":           {"k=v"},
@@ -201,7 +202,7 @@ func TestHeaderProvider_PrecedenceAndSDKHeaders(t *testing.T) {
 				"Connection":        {"close"},
 				"Sec-WebSocket-Key": {"x"},
 				"Upgrade":           {"h2c"},
-			}
+			}, nil
 		}))
 	ctx := ContextWithHeaders(context.Background(), http.Header{"traceparent": {"ignored"}})
 	ctx = ContextWithHeaders(ctx, http.Header{
@@ -247,7 +248,7 @@ func TestHeaderProvider_ReturningNothingAddsNothing(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			server, seen := headerServer(t, http.StatusOK)
 			client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL),
-				WithHeaderProvider(func(context.Context) http.Header { return result }))
+				WithHeaderProvider(func(context.Context) (http.Header, error) { return result, nil }))
 			_, _ = client.Account.GetCredits(context.Background(), nil)
 			_ = dialTTS(context.Background(), client)
 			for _, r := range seen() {
@@ -269,7 +270,7 @@ func TestHeaderProvider_InvalidHeadersFailBeforeSending(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			server, seen := headerServer(t, http.StatusOK)
 			client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL),
-				WithHeaderProvider(func(context.Context) http.Header { return result }))
+				WithHeaderProvider(func(context.Context) (http.Header, error) { return result, nil }))
 			ctx := context.Background()
 			errs := []error{dialTTS(ctx, client)}
 			_, err := client.Account.GetCredits(ctx, nil)
@@ -300,10 +301,77 @@ func TestHeaderProvider_InvalidHeadersFailBeforeSending(t *testing.T) {
 	}
 }
 
+var errTracerDown = errors.New("tracer is down")
+
+type providerError struct{ reason string }
+
+func (e *providerError) Error() string { return "provider: " + e.reason }
+
+func TestHeaderProvider_ErrorFailsEveryPathBeforeSending(t *testing.T) {
+	for name, providerErr := range map[string]error{
+		"sentinel":     errTracerDown,
+		"wrapped":      fmt.Errorf("span lookup: %w", errTracerDown),
+		"custom error": &providerError{"no exporter"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, seen := headerServer(t, http.StatusOK)
+			var calls atomic.Int32
+			client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL),
+				WithHeaderProvider(func(context.Context) (http.Header, error) {
+					calls.Add(1)
+					// The headers must not be sent alongside the error.
+					return http.Header{"Traceparent": {traceA}}, providerErr
+				}))
+			// Per-call headers are set, and must not mask the provider's error.
+			ctx := ContextWithHeaders(context.Background(), http.Header{"Traceparent": {traceB}})
+
+			errs := map[string]error{}
+			_, errs["Account.GetCredits"] = client.Account.GetCredits(ctx, nil)
+			_, errs["Account.GetPackage"] = client.Account.GetPackage(ctx)
+			_, errs["Voices.List"] = client.Voices.List(ctx, nil)
+			_, errs["Voices.Get"] = client.Voices.Get(ctx, "v1")
+			_, errs["Voices.Create"] = client.Voices.Create(ctx, &CreateVoiceParams{Title: "t", Voices: [][]byte{{0}}})
+			errs["Voices.Update"] = client.Voices.Update(ctx, "v1", &UpdateVoiceParams{Title: "t"})
+			errs["Voices.Delete"] = client.Voices.Delete(ctx, "v1")
+			_, errs["TTS.Convert"] = client.TTS.Convert(ctx, &ConvertParams{Text: "hi"})
+			stream, err := client.TTS.Stream(ctx, &StreamParams{Text: "hi"})
+			if stream != nil {
+				_ = stream.Close()
+			}
+			errs["TTS.Stream"] = err
+			_, errs["ASR.Transcribe"] = client.ASR.Transcribe(ctx, []byte{0, 1}, nil)
+			errs["TTS.StreamWebSocket"] = dialTTS(ctx, client)
+
+			for call, err := range errs {
+				if err == nil {
+					t.Errorf("%s: no error", call)
+					continue
+				}
+				if !errors.Is(err, providerErr) {
+					t.Errorf("%s: errors.Is(%v, provider error) = false", call, err)
+				}
+				var custom *providerError
+				if _, isCustom := providerErr.(*providerError); isCustom != errors.As(err, &custom) {
+					t.Errorf("%s: errors.As(%v, *providerError) = %v", call, err, !isCustom)
+				}
+				if want := "fishaudio: header provider: " + providerErr.Error(); err.Error() != want {
+					t.Errorf("%s: err = %q, want %q", call, err, want)
+				}
+			}
+			if n := int(calls.Load()); n != len(errs) {
+				t.Errorf("%d provider calls, want %d", n, len(errs))
+			}
+			for _, r := range seen() {
+				t.Errorf("%s reached the server", r.key)
+			}
+		})
+	}
+}
+
 func TestHeaderProvider_PanicIsNotRecoveredAndNothingIsSent(t *testing.T) {
 	server, seen := headerServer(t, http.StatusOK)
 	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL),
-		WithHeaderProvider(func(context.Context) http.Header { panic("tracer is down") }))
+		WithHeaderProvider(func(context.Context) (http.Header, error) { panic("tracer is down") }))
 	for _, call := range []func(){
 		func() { _, _ = client.TTS.Convert(context.Background(), &ConvertParams{Text: "hi"}) },
 		func() { _ = dialTTS(context.Background(), client) },
@@ -326,7 +394,7 @@ func TestHeaderProvider_ResultIsCopied(t *testing.T) {
 	server, seen := headerServer(t, http.StatusOK)
 	shared := http.Header{"Traceparent": {traceA}}
 	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL),
-		WithHeaderProvider(func(context.Context) http.Header { return shared }))
+		WithHeaderProvider(func(context.Context) (http.Header, error) { return shared, nil }))
 
 	ctx := ContextWithHeaders(context.Background(), http.Header{"X-Id": {"1"}})
 	_, _ = client.Account.GetCredits(ctx, nil)
