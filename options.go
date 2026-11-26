@@ -67,6 +67,12 @@ type WebSocketOptions struct {
 
 	// WriteBufferSize is the size of the write buffer.
 	WriteBufferSize int
+
+	// Header holds extra headers sent on the WebSocket handshake, for
+	// example a W3C traceparent. It is copied when the connection is made.
+	// Authorization and model are always set by the SDK; entries with those
+	// names, in any casing, are ignored.
+	Header http.Header
 }
 
 // DefaultWebSocketOptions returns WebSocketOptions with default values.

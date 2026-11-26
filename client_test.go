@@ -360,3 +360,74 @@ func containsError[T error](err error, target *T) bool {
 	}
 	return false
 }
+
+// recordingTransport records each request it carries, then passes it on.
+type recordingTransport struct {
+	requests []string
+}
+
+func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.requests = append(rt.requests, req.Method+" "+req.URL.Path)
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+func TestWithHTTPClient_CarriesEveryHTTPCall(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/tts":
+			_, _ = w.Write([]byte("audio"))
+		case "/model":
+			if r.Method == http.MethodGet {
+				_, _ = w.Write([]byte(`{"total":0,"items":[]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer server.Close()
+
+	rt := &recordingTransport{}
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL),
+		WithHTTPClient(&http.Client{Transport: rt}))
+	ctx := context.Background()
+
+	calls := []struct {
+		want string
+		call func() error
+	}{
+		{"GET /wallet/self/api-credit", func() error { _, err := client.Account.GetCredits(ctx, nil); return err }},
+		{"GET /wallet/self/package", func() error { _, err := client.Account.GetPackage(ctx); return err }},
+		{"GET /model", func() error { _, err := client.Voices.List(ctx, nil); return err }},
+		{"GET /model/v1", func() error { _, err := client.Voices.Get(ctx, "v1"); return err }},
+		{"POST /model", func() error {
+			_, err := client.Voices.Create(ctx, &CreateVoiceParams{Title: "t", Voices: [][]byte{[]byte("a")}})
+			return err
+		}},
+		{"PATCH /model/v1", func() error { return client.Voices.Update(ctx, "v1", &UpdateVoiceParams{Title: "t"}) }},
+		{"DELETE /model/v1", func() error { return client.Voices.Delete(ctx, "v1") }},
+		{"POST /v1/tts", func() error { _, err := client.TTS.Convert(ctx, &ConvertParams{Text: "hi"}); return err }},
+		{"POST /v1/tts", func() error {
+			s, err := client.TTS.Stream(ctx, &StreamParams{Text: "hi"})
+			if err != nil {
+				return err
+			}
+			_, err = s.Collect()
+			return err
+		}},
+		{"POST /v1/asr", func() error { _, err := client.ASR.Transcribe(ctx, []byte("a"), nil); return err }},
+	}
+
+	for _, c := range calls {
+		rt.requests = nil
+		if err := c.call(); err != nil {
+			t.Errorf("%s: error = %v", c.want, err)
+			continue
+		}
+		got := rt.requests
+		if len(got) != 1 || got[0] != c.want {
+			t.Errorf("requests through WithHTTPClient = %q, want [%q]", got, c.want)
+		}
+	}
+}

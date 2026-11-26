@@ -278,8 +278,14 @@ func (s *TTSService) StreamWebSocket(ctx context.Context, textChan <-chan string
 		WriteBufferSize: opts.WriteBufferSize,
 	}
 
-	// Connect with auth and model headers
+	// Copy the caller's headers, then set auth and model; the SDK's own win.
 	header := http.Header{}
+	for k, v := range opts.Header {
+		if strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "model") {
+			continue
+		}
+		header[k] = append([]string(nil), v...)
+	}
 	header.Set("Authorization", "Bearer "+s.client.apiKey)
 	if model := s.getModel(params); model != "" {
 		header.Set("model", string(model))

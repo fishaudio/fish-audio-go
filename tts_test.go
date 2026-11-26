@@ -6,6 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -855,5 +858,158 @@ func TestTTSService_StreamWebSocket_DefaultModel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for WebSocket upgrade request")
+	}
+}
+
+// --- WebSocketOptions.Header ---
+
+// newHandshakeServer starts a WebSocket server that sends the headers of each
+// handshake it receives to the returned channel, then finishes the stream.
+func newHandshakeServer(t *testing.T) (*Client, <-chan http.Header) {
+	t.Helper()
+	got := make(chan http.Header, 16)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- r.Header.Clone()
+		conn, err := wsUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, _, _ = conn.ReadMessage()
+		data, _ := msgpack.Marshal(wsResponse{Event: "finish", Reason: "stop"})
+		_ = conn.WriteMessage(websocket.BinaryMessage, data)
+	}))
+	t.Cleanup(server.Close)
+	return NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL)), got
+}
+
+// streamWebSocket opens a stream with opts, collects it and returns the
+// headers the server received on the handshake.
+func streamWebSocket(t *testing.T, client *Client, got <-chan http.Header, opts *WebSocketOptions) http.Header {
+	t.Helper()
+	textChan := make(chan string)
+	close(textChan)
+	stream, err := client.TTS.StreamWebSocket(context.Background(), textChan, &StreamParams{}, opts)
+	if err != nil {
+		t.Fatalf("StreamWebSocket() error = %v", err)
+	}
+	if _, err := stream.Collect(); err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	return <-got
+}
+
+func TestTTSService_StreamWebSocket_Header(t *testing.T) {
+	client, got := newHandshakeServer(t)
+	const tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+	opts := DefaultWebSocketOptions()
+	opts.Header = http.Header{
+		"traceparent": {tp}, // non-canonical key, as a map literal allows
+		"X-Multi":     {"a", "b"},
+	}
+	h := streamWebSocket(t, client, got, opts)
+
+	if v := h.Values("Traceparent"); len(v) != 1 || v[0] != tp {
+		t.Errorf("traceparent = %q, want [%q]", v, tp)
+	}
+	if v := h.Values("X-Multi"); len(v) != 2 || v[0] != "a" || v[1] != "b" {
+		t.Errorf("X-Multi = %q, want [a b]", v)
+	}
+}
+
+func TestTTSService_StreamWebSocket_HeaderCannotReplaceAuthOrModel(t *testing.T) {
+	client, got := newHandshakeServer(t)
+
+	opts := DefaultWebSocketOptions()
+	opts.Header = http.Header{
+		"Authorization": {"Bearer other"},
+		"authorization": {"Bearer other"},
+		"Model":         {"other"},
+		"MODEL":         {"other"},
+	}
+	before := opts.Header.Clone()
+	h := streamWebSocket(t, client, got, opts)
+
+	if v := h.Values("Authorization"); len(v) != 1 || v[0] != "Bearer test-key" {
+		t.Errorf("Authorization = %q, want [Bearer test-key]", v)
+	}
+	if v := h.Values("Model"); len(v) != 1 || v[0] != "s2.1-pro" {
+		t.Errorf("model = %q, want [s2.1-pro]", v)
+	}
+	if !reflect.DeepEqual(opts.Header, before) {
+		t.Errorf("caller's Header changed: %v, want %v", opts.Header, before)
+	}
+}
+
+func TestTTSService_StreamWebSocket_NilAndDefaultOptionsHeaders(t *testing.T) {
+	for name, opts := range map[string]*WebSocketOptions{
+		"nil":     nil,
+		"default": DefaultWebSocketOptions(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, got := newHandshakeServer(t)
+			h := streamWebSocket(t, client, got, opts)
+
+			if v := h.Values("Authorization"); len(v) != 1 || v[0] != "Bearer test-key" {
+				t.Errorf("Authorization = %q, want [Bearer test-key]", v)
+			}
+			if v := h.Values("Model"); len(v) != 1 || v[0] != "s2.1-pro" {
+				t.Errorf("model = %q, want [s2.1-pro]", v)
+			}
+			for k := range h {
+				switch k {
+				case "Authorization", "Model", "Connection", "Upgrade", "User-Agent",
+					"Sec-Websocket-Key", "Sec-Websocket-Version":
+				default:
+					t.Errorf("unexpected handshake header %q", k)
+				}
+			}
+		})
+	}
+}
+
+func TestTTSService_StreamWebSocket_ConcurrentHeaders(t *testing.T) {
+	client, got := newHandshakeServer(t)
+
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			opts := DefaultWebSocketOptions()
+			opts.Header = http.Header{"X-Stream": {strconv.Itoa(i)}}
+			textChan := make(chan string)
+			close(textChan)
+			stream, err := client.TTS.StreamWebSocket(context.Background(), textChan, nil, opts)
+			if err == nil {
+				_, err = stream.Collect()
+			}
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("StreamWebSocket() error = %v", err)
+		}
+	}
+
+	seen := map[string]bool{}
+	for i := 0; i < n; i++ {
+		v := (<-got).Values("X-Stream")
+		if len(v) != 1 {
+			t.Fatalf("X-Stream = %q, want one value", v)
+		}
+		if seen[v[0]] {
+			t.Errorf("X-Stream %q sent twice", v[0])
+		}
+		seen[v[0]] = true
+	}
+	if len(seen) != n {
+		t.Errorf("got %d distinct X-Stream values, want %d", len(seen), n)
 	}
 }
