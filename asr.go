@@ -100,7 +100,8 @@ func (s *ASRService) Transcribe(ctx context.Context, audio []byte, params *Trans
 	req.Header.Set("Authorization", "Bearer "+s.client.apiKey)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("User-Agent", userAgent)
-	if err := s.client.addHeaders(ctx, req.Header); err != nil {
+	traceparent, err := s.client.addHeaders(ctx, req.Header)
+	if err != nil {
 		return nil, err
 	}
 
@@ -109,6 +110,7 @@ func (s *ASRService) Transcribe(ctx context.Context, audio []byte, params *Trans
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
+	checkTrace(ctx, traceparent, resp)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {

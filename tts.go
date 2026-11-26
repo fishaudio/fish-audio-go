@@ -286,11 +286,14 @@ func (s *TTSService) StreamWebSocket(ctx context.Context, textChan <-chan string
 	if model := s.getModel(params); model != "" {
 		header.Set("model", string(model))
 	}
-	if err := s.client.addHeaders(ctx, header); err != nil {
+	traceparent, err := s.client.addHeaders(ctx, header)
+	if err != nil {
 		return nil, err
 	}
 
-	conn, _, err := dialer.DialContext(ctx, wsURL, header)
+	// The handshake response is returned on a failed handshake too.
+	conn, resp, err := dialer.DialContext(ctx, wsURL, header)
+	checkTrace(ctx, traceparent, resp)
 	if err != nil {
 		return nil, fmt.Errorf("websocket dial failed: %w", err)
 	}

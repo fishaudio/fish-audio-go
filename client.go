@@ -179,7 +179,8 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 			req.URL.RawQuery = q.Encode()
 		}
 	}
-	if err := c.addHeaders(ctx, req.Header); err != nil {
+	traceparent, err := c.addHeaders(ctx, req.Header)
+	if err != nil {
 		return nil, err
 	}
 
@@ -187,6 +188,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
+	checkTrace(ctx, traceparent, resp)
 
 	if resp.StatusCode >= 400 {
 		defer func() { _ = resp.Body.Close() }()

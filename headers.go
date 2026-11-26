@@ -26,6 +26,15 @@ import (
 // [ContextWithHeaders]. A name or value that HTTP does not allow fails the
 // call with an error before anything is sent. A panic is not recovered.
 //
+// The API returns the trace id it used in the X-Fish-Trace-Id response
+// header. If the SDK sent a traceparent (from the provider or
+// [ContextWithHeaders]) and the response names a different trace, the API
+// did not continue it: the value was invalid, more than one was sent, or a
+// transport replaced it. The SDK then logs one warning per process at
+// [log/slog.LevelWarn] through [log/slog.Default], with both trace ids and
+// the likely cause; it never echoes other header values and never changes
+// the call.
+//
 // With OpenTelemetry (go.opentelemetry.io/otel/trace), this sends the span in
 // the call's ctx as traceparent and no other trace data, so you can find your
 // requests in Fish Audio's traces:
@@ -54,10 +63,11 @@ type requestHeadersKey struct{}
 // as the ctx of a call. Calling it again on the result adds to the headers;
 // a name set again replaces the earlier values.
 //
-// These headers win over a [HeaderProvider]. Headers the SDK sets
-// (Authorization, model, Content-Type, Content-Length, Host, WebSocket
-// handshake headers) cannot be replaced and are ignored; a User-Agent is
-// appended to the SDK's own.
+// These headers win over a [HeaderProvider]. A traceparent set here is
+// checked against the response like the provider's; see [HeaderProvider].
+// Headers the SDK sets (Authorization, model, Content-Type, Content-Length,
+// Host, WebSocket handshake headers) cannot be replaced and are ignored; a
+// User-Agent is appended to the SDK's own.
 //
 //	ctx = fishaudio.ContextWithHeaders(ctx, http.Header{"Traceparent": {tp}})
 //	audio, err := client.TTS.Convert(ctx, &fishaudio.ConvertParams{Text: "Hello"})
@@ -134,11 +144,15 @@ func checkHeader(source, name string, values []string) error {
 // request and WebSocket handshake calls it right before sending, so the
 // provider sees the caller's ctx at that moment. (A retry loop added later
 // must call it once per attempt.)
-func (c *Client) addHeaders(ctx context.Context, header http.Header) error {
+//
+// It returns the Traceparent values it put on header, nil if it put none, for
+// [checkTrace] to compare with the response.
+func (c *Client) addHeaders(ctx context.Context, header http.Header) ([]string, error) {
+	var traceparent []string
 	if perCall, ok := ctx.Value(requestHeadersKey{}).(http.Header); ok {
 		for name, values := range perCall {
 			if err := checkHeader("ContextWithHeaders", name, values); err != nil {
-				return err
+				return nil, err
 			}
 			switch {
 			case name == "User-Agent":
@@ -146,21 +160,24 @@ func (c *Client) addHeaders(ctx context.Context, header http.Header) error {
 			case reservedHeader(name):
 			case len(values) > 0:
 				header[name] = append([]string(nil), values...)
+				if name == "Traceparent" {
+					traceparent = header[name]
+				}
 			}
 		}
 	}
 	if c.headerProvider == nil {
-		return nil
+		return append([]string(nil), traceparent...), nil
 	}
 	provided, err := c.headerProvider(ctx)
 	if err != nil {
-		return fmt.Errorf("fishaudio: header provider: %w", err)
+		return nil, fmt.Errorf("fishaudio: header provider: %w", err)
 	}
 	// Canonical names first, so two spellings of one name cannot both be sent.
 	canonical := http.Header{}
 	for name, values := range provided {
 		if err := checkHeader("header provider", name, values); err != nil {
-			return err
+			return nil, err
 		}
 		key := http.CanonicalHeaderKey(name)
 		canonical[key] = append(canonical[key], values...)
@@ -173,6 +190,11 @@ func (c *Client) addHeaders(ctx context.Context, header http.Header) error {
 			continue
 		}
 		header[name] = values
+		if name == "Traceparent" {
+			traceparent = values
+		}
 	}
-	return nil
+	// A copy, so a transport that edits the request's headers cannot change
+	// what is compared.
+	return append([]string(nil), traceparent...), nil
 }

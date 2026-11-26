@@ -299,11 +299,13 @@ so you can find your requests in Fish Audio's traces. It sends no other trace da
 (no `baggage`, no `tracestate`). To turn this off, leave out `WithHeaderProvider`.
 
 Using it together with `otelhttp` is harmless: on HTTP calls `otelhttp` replaces the
-provider's `traceparent` with its own client span's, so each request carries one
-header in one trace.
+provider's `traceparent` with its own client span's, a child of the span in `ctx`, so
+each request carries one header in one trace. If the provider sends a trace other
+than the span in `ctx` (your own trace IDs below), `otelhttp` still replaces it, and
+on HTTP calls Fish Audio sees `otelhttp`'s trace, not yours.
 
 **Your own trace IDs.** The API accepts only a valid `traceparent` (version `00`:
-32 hex digits of trace ID, 16 of parent ID, 2 of flags). Convert your IDs; an
+32 lowercase hex digits of trace ID, 16 of parent ID, 2 of flags, exactly one header). Convert your IDs; an
 invalid value is ignored by the API, and the request gets a new trace ID.
 
 ```go
@@ -344,6 +346,16 @@ method, the WebSocket included, and win over the provider:
 ctx = fishaudio.ContextWithHeaders(ctx, http.Header{"Traceparent": {tp}})
 audio, err := client.TTS.Convert(ctx, &fishaudio.ConvertParams{Text: "Hello"})
 ```
+
+**When your trace is not continued.** Fish Audio returns the trace ID it used in
+the `X-Fish-Trace-Id` response header. When the SDK sent a `traceparent` and that ID
+is not its trace ID, the SDK logs `fishaudio: the API did not continue the trace this
+SDK sent` once per process, at Warn level through `slog.Default()`, with both trace
+IDs (never other header values) and the likely cause: an invalid value, more than one
+`traceparent`, or a transport such as `otelhttp` replacing it. Fix the cause and the
+line stops; the call itself is never affected. To silence it, filter that message or
+raise the level in your `slog` handler. Responses without `X-Fish-Trace-Id` (another
+base URL, a proxy) are not checked.
 
 Rules:
 - Neither can set `Authorization`, `model`, `Content-Type`, `Content-Length`, `Host`
