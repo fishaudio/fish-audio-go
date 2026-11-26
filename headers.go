@@ -12,9 +12,10 @@ import (
 // W3C traceparent of the caller's current request, so Fish Audio continues
 // the caller's trace instead of starting a new one.
 //
-// The SDK calls it once for every HTTP request and every WebSocket handshake,
-// right before sending, on the goroutine that made the call, with the ctx
-// passed to that call. Concurrent calls call it concurrently, so it must be
+// The SDK calls it once for every SDK call that sends an HTTP request or
+// opens a WebSocket, right before sending, on the goroutine that made the
+// call, with the ctx passed to that call. If the server redirects, net/http
+// sends the same headers again without calling it a second time. Concurrent calls call it concurrently, so it must be
 // safe for concurrent use. Keep it fast: the request waits for it.
 //
 // Return nil, nil to add nothing. A non-nil error fails the call before
@@ -161,6 +162,9 @@ func reservedHeader(canonical string) bool {
 		// Cookie belongs to a cookie jar, and HTTP/2 splits it and so
 		// changes its bytes.
 		"Host", "Trailer", "Expect", "Accept-Encoding", "Cookie",
+		// The transport adds its own from the proxy URL's credentials, so a
+		// second one would reach the proxy.
+		"Proxy-Authorization",
 		// Hop-by-hop (RFC 9110 §7.6.1): not end to end, and HTTP/2 drops
 		// them or fails the request.
 		"Connection", "Keep-Alive", "Proxy-Connection", "Te", "Transfer-Encoding", "Upgrade":

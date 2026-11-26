@@ -298,8 +298,10 @@ find your requests in Fish Audio's traces. It adds no `tracestate` or `baggage`;
 `otelhttp` transport, if you also use one, adds on HTTP calls whatever its propagator
 sends, with or without the provider. To turn this off, leave out `WithHeaderProvider`.
 
-Using it together with `otelhttp` is harmless: on HTTP calls `otelhttp` replaces the
-provider's `traceparent` with its own client span's, a child of the span in `ctx`, so
+Using it together with `otelhttp` is harmless: with a W3C trace context propagator
+configured (`propagation.TraceContext`, which `otelhttp` needs in order to send any
+`traceparent`), on HTTP calls `otelhttp` replaces the provider's `traceparent` with its
+own client span's, a child of the span in `ctx`, so
 each request carries one `traceparent` in one trace. If the provider sends a trace other
 than the span in `ctx` (your own trace IDs below), `otelhttp` still replaces it, and
 on HTTP calls Fish Audio sees `otelhttp`'s trace, not yours; the SDK then logs the
@@ -366,7 +368,8 @@ it, filter that message or raise the level in your `slog` handler. Responses wit
 
 Rules:
 - Neither can set a name the SDK or the transport owns: `Authorization`, `model`,
-  `User-Agent`, `Host`, `Cookie`, `Expect`, `Accept-Encoding`, any `Content-*` name
+  `User-Agent`, `Host`, `Cookie`, `Expect`, `Accept-Encoding`, `Proxy-Authorization`,
+  any `Content-*` name
   (the SDK writes the body), the hop-by-hop `Connection`, `Keep-Alive`,
   `Proxy-Connection`, `TE`, `Trailer`, `Transfer-Encoding` and `Upgrade`, and any
   `Sec-WebSocket-*` name. These are ignored, whatever their value: net/http, HTTP/2 or
@@ -386,7 +389,8 @@ Rules:
 - A provider error fails the call before anything is sent. A panic in the provider
   is not recovered.
 - Concurrent calls call the provider concurrently, each with its own `ctx`; it must
-  be safe for concurrent use. It runs once per request, so keep it fast.
+  be safe for concurrent use. It runs once per SDK call, so keep it fast; if the
+  server redirects, the same headers are sent again without another call.
 - The SDK reads the header the provider returns after the provider returns, so do not
   modify it afterwards: return a new `http.Header` on every call, or the same one if
   nothing ever modifies it.
