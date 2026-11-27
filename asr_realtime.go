@@ -80,7 +80,8 @@ var (
 // which the server counts as activity: a session stays open, and billed, while
 // the audio channel is idle. Close the channel or cancel ctx when your audio
 // source stops, or set opts.PingInterval to 0 to let the server close a
-// session after 30 idle seconds.
+// session after 30 idle seconds. opts.PingTimeout is not used: a ping that
+// cannot be written ends the session, a missing pong does not.
 func (s *ASRService) StreamWebSocket(ctx context.Context, audio <-chan []byte, params *ASRRealtimeParams, opts *WebSocketOptions) (*ASRRealtimeStream, error) {
 	if audio == nil {
 		return nil, errors.New("fishaudio: audio channel is nil")
@@ -305,9 +306,10 @@ func (s *ASRRealtimeStream) Event() ASREvent {
 // has not ended, or was ended by Close.
 //
 // It is an *ASRRealtimeError when the server ended the session with an error
-// or closed the connection with a code other than 1000, a *WebSocketError
-// when the connection was lost, and an error matching ctx.Err() and
-// context.Cause(ctx) (with errors.Is) when ctx ended the session.
+// or closed the connection before session_done (its CloseCode is the code of
+// the close frame), a *WebSocketError when the connection was lost or a write
+// failed, and an error matching ctx.Err() and context.Cause(ctx) (with
+// errors.Is) when ctx ended the session.
 func (s *ASRRealtimeStream) Err() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -613,20 +615,29 @@ func asrStartupError(ctx context.Context, err error) error {
 	return fmt.Errorf("%w: %w", ctxErr, err)
 }
 
-// asrCloseError turns the error that ended reading into the session's error:
-// nil for a normal close.
+// asrCloseError turns the error that ended reading into the session's error.
+// It is never nil: a session ends well only with session_done, and readLoop
+// has returned by then.
+//
+//   - The connection dropped, or failed: *WebSocketError. The WebSocket
+//     library reports a connection that ended without a close frame as a
+//     close with code 1006, which no server sends: that is a dropped
+//     connection too, not a session the server closed.
+//   - The server closed it, with any code: *ASRRealtimeError with that code,
+//     and with the error message that explains it if one came first. That
+//     includes 1000 before session_done: whatever was transcribed so far is
+//     not the whole session.
+//   - The server sent an error that ends the session: *ASRRealtimeError with
+//     that error, and the close code if a close frame followed.
 func asrCloseError(err error, lastError *ASRErrorEvent, fatal bool) error {
 	var closeErr *websocket.CloseError
-	isClose := errors.As(err, &closeErr)
-	if isClose && closeErr.Code == websocket.CloseNormalClosure && !fatal {
-		return nil
-	}
-	if !isClose && !fatal {
+	closed := errors.As(err, &closeErr) && closeErr.Code != websocket.CloseAbnormalClosure
+	if !closed && !fatal {
 		return &WebSocketError{Message: "websocket connection lost: " + err.Error(), Err: err}
 	}
 
 	result := &ASRRealtimeError{}
-	if isClose {
+	if closed {
 		result.CloseCode = closeErr.Code
 		result.Message = closeErr.Text
 	}
@@ -639,7 +650,11 @@ func asrCloseError(err error, lastError *ASRErrorEvent, fatal bool) error {
 		}
 	}
 	if result.Message == "" {
-		result.Message = "websocket closed unexpectedly"
+		if closed && closeErr.Code == websocket.CloseNormalClosure {
+			result.Message = "connection closed before session_done"
+		} else {
+			result.Message = "websocket closed unexpectedly"
+		}
 	}
 	return result
 }
@@ -662,12 +677,19 @@ func (s *ASRRealtimeStream) sendLoop(audio <-chan []byte, pingInterval time.Dura
 		case <-s.done:
 			return
 		case <-ping:
-			// Fails only on a broken connection, which readLoop reports.
-			_ = s.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(pingInterval))
+			if err := s.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(pingInterval)); err != nil {
+				s.sendFailed(&WebSocketError{Message: "failed to send ping: " + err.Error(), Err: err})
+				return
+			}
 		case request := <-s.control:
-			// A failed write is the caller's to see; if the connection is
-			// broken, readLoop ends the session.
-			request.result <- s.writeFrame(request.data)
+			// A failed write is the caller's to see, and the end of the
+			// session: nothing more can be written on this connection.
+			err := s.writeFrame(request.data)
+			request.result <- err
+			if err != nil {
+				s.sendFailed(err)
+				return
+			}
 		case chunk, ok := <-audio:
 			var err error
 			switch {
@@ -685,9 +707,11 @@ func (s *ASRRealtimeStream) sendLoop(audio <-chan []byte, pingInterval time.Dura
 	}
 }
 
-// sendFailed ends the session after a failed write. A write usually fails
-// because the server closed the connection, and readLoop then knows why: give
-// it a moment to report that before reporting the write error itself.
+// sendFailed ends the session after a failed write, of audio, a control
+// message or a ping. A write usually fails because the server closed the
+// connection, and readLoop then knows why: give it a moment to report that
+// before reporting the write error itself. readLoop cannot be left to it
+// alone: a connection can refuse writes while a read on it keeps waiting.
 func (s *ASRRealtimeStream) sendFailed(err error) {
 	timer := time.NewTimer(asrCloseGrace)
 	defer timer.Stop()

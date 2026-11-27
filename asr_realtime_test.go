@@ -744,12 +744,14 @@ func TestASRRealtime_AbnormalClose(t *testing.T) {
 			events: []string{"session_started", "error", "committed"},
 		},
 		{
-			name: "connection dropped without a close frame",
+			// 1000 is the code of a normal end, but only after session_done.
+			name: "closed with 1000 before session_done",
 			script: func(c *fakeASRConn) {
-				_ = c.conn.UnderlyingConn().Close()
+				c.send(msg{"type": "draft", "turn_index": 0, "text": "half a sent", "settled_text": "", "audio_ms": 0})
+				c.close(websocket.CloseNormalClosure, "")
 			},
-			want:   ASRRealtimeError{Message: "unexpected EOF", CloseCode: websocket.CloseAbnormalClosure},
-			events: []string{"session_started"},
+			want:   ASRRealtimeError{Message: "connection closed before session_done", CloseCode: websocket.CloseNormalClosure},
+			events: []string{"session_started", "draft"},
 		},
 	}
 	for _, tt := range tests {
@@ -777,6 +779,113 @@ func TestASRRealtime_AbnormalClose(t *testing.T) {
 }
 
 // Lesson 1: a network failure while the session opens is an SDK error.
+// A connection that drops without a close frame is a lost connection, not a
+// session the server ended: *WebSocketError, with the cause reachable. The
+// WebSocket library reports it as a close with code 1006, which is never sent
+// by a server.
+func TestASRRealtime_DroppedConnection(t *testing.T) {
+	asrTestDeadline(t)
+	t.Run("nothing before it", func(t *testing.T) {
+		f := newFakeASRServer(t, func(c *fakeASRConn) {
+			if c.start() != nil {
+				_ = c.conn.UnderlyingConn().Close()
+			}
+		})
+		stream := mustStream(t, f, context.Background(), make(chan []byte), nil)
+		if got, want := eventTypes(collect(t, stream)), []string{"session_started"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("events = %v, want %v", got, want)
+		}
+		err := stream.Err()
+		var wsErr *WebSocketError
+		if !errors.As(err, &wsErr) {
+			t.Fatalf("Err() = %T (%v), want *WebSocketError", err, err)
+		}
+		var rtErr *ASRRealtimeError
+		if errors.As(err, &rtErr) {
+			t.Errorf("Err() = %v is also an *ASRRealtimeError", err)
+		}
+		var closeErr *websocket.CloseError
+		if !errors.As(err, &closeErr) || closeErr.Code != websocket.CloseAbnormalClosure {
+			t.Errorf("the cause is not reachable through Unwrap: %v", err)
+		}
+		assertNoASRGoroutines(t)
+	})
+	// After an error that ends the session, the server's error is the
+	// result: there is just no close code to go with it.
+	t.Run("after a fatal error", func(t *testing.T) {
+		f := newFakeASRServer(t, func(c *fakeASRConn) {
+			if c.start() == nil {
+				return
+			}
+			c.send(msg{"type": "error", "code": 500, "error_type": "internal", "message": "boom",
+				"request_id": "req-1", "recoverable": false})
+			_ = c.conn.UnderlyingConn().Close()
+		})
+		stream := mustStream(t, f, context.Background(), make(chan []byte), nil)
+		collect(t, stream)
+		var rtErr *ASRRealtimeError
+		if !errors.As(stream.Err(), &rtErr) {
+			t.Fatalf("Err() = %T (%v), want *ASRRealtimeError", stream.Err(), stream.Err())
+		}
+		if want := (ASRRealtimeError{Message: "boom", ErrorType: "internal", Code: 500, RequestID: "req-1"}); *rtErr != want {
+			t.Errorf("Err() = %+v, want %+v", *rtErr, want)
+		}
+	})
+}
+
+// A write that fails ends the session, whichever write it was. The reader
+// cannot be relied on to notice: a connection can refuse writes while a read
+// on it just keeps waiting. Here the client's sending side is shut, and the
+// server neither reads nor closes.
+func TestASRRealtime_FailedWriteEndsSession(t *testing.T) {
+	asrTestDeadline(t)
+	shortGrace(t)
+	start := func(t *testing.T, opts *WebSocketOptions) *ASRRealtimeStream {
+		release := make(chan struct{})
+		f := newFakeASRServer(t, func(c *fakeASRConn) {
+			if c.start() != nil {
+				<-release
+			}
+		})
+		t.Cleanup(func() { close(release) }) // runs before the server's cleanup
+		stream, err := f.client().ASR.StreamWebSocket(context.Background(), make(chan []byte), nil, opts)
+		if err != nil {
+			t.Fatalf("StreamWebSocket() error = %v", err)
+		}
+		if err := stream.conn.NetConn().(*net.TCPConn).CloseWrite(); err != nil {
+			t.Fatal(err)
+		}
+		return stream
+	}
+	ended := func(t *testing.T, stream *ASRRealtimeStream) {
+		t.Helper()
+		collect(t, stream) // returns once the session has ended
+		var wsErr *WebSocketError
+		if !errors.As(stream.Err(), &wsErr) {
+			t.Errorf("Err() = %T (%v), want *WebSocketError", stream.Err(), stream.Err())
+		}
+		assertNoASRGoroutines(t)
+	}
+
+	t.Run("control message", func(t *testing.T) {
+		opts := DefaultWebSocketOptions()
+		opts.PingInterval = 0
+		stream := start(t, opts)
+		if err := stream.Finalize(); err == nil {
+			t.Fatal("Finalize() = nil on a connection that cannot be written to")
+		}
+		ended(t, stream)
+		if err := stream.Finalize(); err == nil {
+			t.Error("Finalize() = nil after the session ended")
+		}
+	})
+	t.Run("ping", func(t *testing.T) {
+		opts := DefaultWebSocketOptions()
+		opts.PingInterval = 10 * time.Millisecond
+		ended(t, start(t, opts))
+	})
+}
+
 func TestASRRealtime_ConnectionFailuresAreSDKErrors(t *testing.T) {
 	asrTestDeadline(t)
 	isSDKError := func(err error) bool {
