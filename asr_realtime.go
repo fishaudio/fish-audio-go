@@ -27,10 +27,14 @@ const (
 
 // These are variables so that tests can shorten them.
 var (
-	// asrCloseGrace is how long a session waits for the server's close frame
-	// after an error that ends the session, and for the reason of a broken
-	// connection after a failed send.
+	// asrCloseGrace is how long a session waits, after a failed send, for
+	// the reader to report why the connection broke.
 	asrCloseGrace = 2 * time.Second
+	// asrFatalGrace is how long a session waits for the server to close the
+	// connection after an error that ends the session. The server may still
+	// be committing the open turn, so this is generous: it only bounds a
+	// server that never closes.
+	asrFatalGrace = 10 * time.Second
 	// asrCloseFrameTimeout bounds the write of the close frame.
 	asrCloseFrameTimeout = 250 * time.Millisecond
 	// asrCtxSettle is how long a failed dial waits for a ctx whose deadline
@@ -149,7 +153,12 @@ func (s *ASRService) StreamWebSocket(ctx context.Context, audio <-chan []byte, p
 			// The upgrade was refused (401, 402, 429, ...): same errors as the HTTP API.
 			body, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
-			return nil, newAPIError(resp.StatusCode, resp.Status, string(body))
+			apiErr := newAPIError(resp.StatusCode, resp.Status, string(body))
+			if ctxErr := asrContextError(ctx); ctxErr != nil {
+				// ctx ended while the refusal was being read: report both.
+				return nil, fmt.Errorf("%w: %w", ctxErr, apiErr)
+			}
+			return nil, apiErr
 		}
 		err = asrStartupError(ctx, err)
 		return nil, &WebSocketError{Message: "websocket dial failed: " + err.Error(), Err: err}
@@ -553,10 +562,11 @@ func (s *ASRRealtimeStream) readLoop() {
 		case *ASRErrorEvent:
 			lastError = e
 			if !e.Recoverable {
-				// The session is over. Wait briefly for the close frame, to
-				// report its code along with the error.
+				// The session is over. Wait for the close frame, to report
+				// its code along with the error, and for whatever the
+				// server still commits before it.
 				fatal = true
-				_ = s.conn.SetReadDeadline(time.Now().Add(asrCloseGrace))
+				_ = s.conn.SetReadDeadline(time.Now().Add(asrFatalGrace))
 				continue
 			}
 		case *ASRSessionDoneEvent:

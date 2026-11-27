@@ -1,6 +1,7 @@
 package fishaudio
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -65,12 +66,13 @@ func shortSettle(t *testing.T) {
 	t.Cleanup(func() { asrCtxSettle = old })
 }
 
-// shortGrace shortens the wait for a close frame, for tests where none comes.
+// shortGrace shortens the waits for a close frame and for the reason of a
+// failed send, for tests where neither comes.
 func shortGrace(t *testing.T) {
 	t.Helper()
-	old := asrCloseGrace
-	asrCloseGrace = 100 * time.Millisecond
-	t.Cleanup(func() { asrCloseGrace = old })
+	oldClose, oldFatal := asrCloseGrace, asrFatalGrace
+	asrCloseGrace, asrFatalGrace = 100*time.Millisecond, 100*time.Millisecond
+	t.Cleanup(func() { asrCloseGrace, asrFatalGrace = oldClose, oldFatal })
 }
 
 func mustStream(t *testing.T, f *fakeASRServer, ctx context.Context, audio <-chan []byte, params *ASRRealtimeParams) *ASRRealtimeStream {
@@ -697,6 +699,90 @@ func TestASRRealtime_EventsAfterFatalErrorAreDelivered(t *testing.T) {
 	want := ASRRealtimeError{Message: "session too long", ErrorType: "max_duration_exceeded", Code: 413, RequestID: "req-1", CloseCode: 4413}
 	if *rtErr != want {
 		t.Errorf("Err() = %+v, want %+v", *rtErr, want)
+	}
+	assertNoASRGoroutines(t)
+}
+
+// The server may take a while to commit the open turn after the error that
+// ends the session. The wait for that is its own, longer one: not the short
+// wait for the reason of a failed send.
+func TestASRRealtime_SlowCommitAfterFatalError(t *testing.T) {
+	asrTestDeadline(t)
+	oldGrace := asrCloseGrace
+	asrCloseGrace = 50 * time.Millisecond
+	defer func() { asrCloseGrace = oldGrace }()
+	f := newFakeASRServer(t, func(c *fakeASRConn) {
+		if c.start() == nil {
+			return
+		}
+		c.send(msg{"type": "error", "code": 413, "error_type": "max_duration_exceeded", "message": "session too long",
+			"request_id": "req-1", "recoverable": false})
+		time.Sleep(400 * time.Millisecond) // the server is still transcribing
+		c.commit("please cancel my order", "finalize")
+		c.close(4413, "max duration exceeded")
+	})
+	stream := mustStream(t, f, context.Background(), make(chan []byte), nil)
+	if got, want := eventTypes(collect(t, stream)), []string{"session_started", "committed"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("events = %v, want %v", got, want)
+	}
+	var rtErr *ASRRealtimeError
+	if !errors.As(stream.Err(), &rtErr) || rtErr.CloseCode != 4413 {
+		t.Errorf("Err() = %v, want *ASRRealtimeError with close code 4413", stream.Err())
+	}
+}
+
+// A refused upgrade whose response body never arrives ends with ctx, and the
+// error says so: it matches ctx's error and cause, and the response that was
+// refused stays reachable.
+func TestASRRealtime_CancelWhileReadingRefusedHandshake(t *testing.T) {
+	asrTestDeadline(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	headersSent := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		reader := bufio.NewReader(conn)
+		for { // the request, up to its empty line
+			line, err := reader.ReadString('\n')
+			if err != nil || line == "\r\n" {
+				break
+			}
+		}
+		// The status and headers, and a body that does not come.
+		_, _ = conn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 64\r\n\r\n"))
+		close(headersSent)
+		<-release
+	}()
+
+	errShutdown := errors.New("application is shutting down")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	go func() {
+		<-headersSent
+		time.Sleep(100 * time.Millisecond) // the client is waiting for the body by now
+		cancel(errShutdown)
+	}()
+	client := NewClient(WithAPIKey("k"), WithBaseURL("http://"+listener.Addr().String()))
+	within(t, "StreamWebSocket on a refused handshake", func() {
+		_, err = client.ASR.StreamWebSocket(ctx, make(chan []byte), nil, nil)
+	})
+	for _, want := range []error{context.Canceled, errShutdown} {
+		if !errors.Is(err, want) {
+			t.Errorf("error = %T (%v), want errors.Is(err, %v)", err, err, want)
+		}
+	}
+	var serverErr *ServerError
+	if !errors.As(err, &serverErr) {
+		t.Errorf("error = %T (%v), want the refused response (*ServerError) to stay reachable", err, err)
 	}
 	assertNoASRGoroutines(t)
 }
