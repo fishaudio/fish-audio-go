@@ -13,7 +13,7 @@
 
 The official Go library for the Fish Audio API
 
-**Documentation:** [Go SDK Guide](https://docs.fish.audio/developer-guide/sdk-guide/go/) | [API Reference](https://docs.fish.audio/api-reference/sdk/go/)
+**Documentation:** [Go package reference](https://pkg.go.dev/github.com/fishaudio/fish-audio-go) | [Fish Audio docs](https://docs.fish.audio)
 
 ## Installation
 
@@ -99,6 +99,8 @@ audio, err := client.TTS.Convert(ctx, &fishaudio.ConvertParams{
 
 Available models: `ModelS21Pro` (default), `ModelS21ProFree`, `ModelDrama3`, `ModelS2Pro` and `ModelS1` (retires 2026-12-31).
 
+The `s2.1-pro` default and the `ModelS21Pro`, `ModelS21ProFree` and `ModelDrama3` constants are not in v1.1.1 or earlier; v1.1.0 and v1.1.1 default to `s2-pro`. In those releases, pass the model as a string, for example `Model: "drama-3"`.
+
 **Reusable configuration:**
 
 ```go
@@ -138,7 +140,7 @@ stream, _ := client.TTS.Stream(ctx, &fishaudio.StreamParams{Text: "Hello!"})
 audio, err := stream.Collect()
 ```
 
-[Learn more](https://docs.fish.audio/developer-guide/sdk-guide/go/text-to-speech)
+[Learn more](https://docs.fish.audio/features/text-to-speech)
 
 ### Speech-to-Text
 
@@ -159,7 +161,7 @@ for _, seg := range result.Segments {
 }
 ```
 
-[Learn more](https://docs.fish.audio/developer-guide/sdk-guide/go/speech-to-text)
+[Learn more](https://docs.fish.audio/features/speech-to-text)
 
 ### Real-time Streaming
 
@@ -191,7 +193,7 @@ if err := wsStream.Err(); err != nil {
 }
 ```
 
-[Learn more](https://docs.fish.audio/developer-guide/sdk-guide/go/websocket)
+[Learn more](https://docs.fish.audio/features/realtime-streaming)
 
 ### Voice Cloning
 
@@ -229,7 +231,7 @@ audio, err := client.TTS.Convert(ctx, &fishaudio.ConvertParams{
 })
 ```
 
-[Learn more](https://docs.fish.audio/developer-guide/sdk-guide/go/voice-cloning)
+[Learn more](https://docs.fish.audio/features/voice-cloning)
 
 ## Resource Clients
 
@@ -269,7 +271,7 @@ if err != nil {
 
 ## Resources
 
-- **Documentation:** [Go SDK Guide](https://docs.fish.audio/developer-guide/sdk-guide/go/) | [API Reference](https://docs.fish.audio/api-reference/sdk/go/)
+- **Documentation:** [Go package reference](https://pkg.go.dev/github.com/fishaudio/fish-audio-go) | [Fish Audio docs](https://docs.fish.audio)
 - **Package:** [pkg.go.dev](https://pkg.go.dev/github.com/fishaudio/fish-audio-go) | [GitHub](https://github.com/fishaudio/fish-audio-go)
 
 ## License
