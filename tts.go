@@ -43,6 +43,9 @@ type TTSConfig struct {
 	OpusBitrate int `json:"opus_bitrate,omitempty"`
 	// Normalize indicates whether to normalize/clean the input text. Default: true.
 	Normalize *bool `json:"normalize,omitempty"`
+	// Language is the BCP-47 tag of the text's language, such as "en", "es-MX"
+	// or "zh-CN". See ConvertParams.Language.
+	Language string `json:"language,omitempty"`
 	// ChunkLength is the characters per generation chunk. Range: 100-300. Default: 200.
 	ChunkLength int `json:"chunk_length,omitempty"`
 	// Latency is the generation mode. Options: "normal", "balanced". Default: "balanced".
@@ -73,6 +76,13 @@ type ConvertParams struct {
 	Format AudioFormat `json:"format,omitempty"`
 	// Latency is the generation mode.
 	Latency LatencyMode `json:"latency,omitempty"`
+	// Language is the BCP-47 tag of the text's language, such as "en", "es-MX"
+	// or "zh-CN". It only changes how text normalization spells out numbers,
+	// dates, units and symbols (and word-timestamp alignment); it does not
+	// change the voice or accent. It is sent as given and the API checks it.
+	// Empty means unset: the field is not sent and the API detects the
+	// language of each chunk. Overrides Config.Language.
+	Language string `json:"language,omitempty"`
 	// Speed is a shorthand for setting prosody speed (0.5-2.0).
 	Speed float64 `json:"-"`
 	// Config provides additional TTS configuration.
@@ -93,6 +103,13 @@ type StreamParams struct {
 	Format AudioFormat `json:"format,omitempty"`
 	// Latency is the generation mode.
 	Latency LatencyMode `json:"latency,omitempty"`
+	// Language is the BCP-47 tag of the text's language, such as "en", "es-MX"
+	// or "zh-CN". It only changes how text normalization spells out numbers,
+	// dates, units and symbols (and word-timestamp alignment); it does not
+	// change the voice or accent. It is sent as given and the API checks it.
+	// Empty means unset: the field is not sent and the API detects the
+	// language of each chunk. Overrides Config.Language.
+	Language string `json:"language,omitempty"`
 	// Speed is a shorthand for setting prosody speed (0.5-2.0).
 	Speed float64 `json:"-"`
 	// Config provides additional TTS configuration.
@@ -110,6 +127,7 @@ type ttsRequest struct {
 	References  []ReferenceAudio `json:"references,omitempty" msgpack:"references,omitempty"`
 	ReferenceID string           `json:"reference_id,omitempty" msgpack:"reference_id,omitempty"`
 	Normalize   *bool            `json:"normalize,omitempty" msgpack:"normalize,omitempty"`
+	Language    string           `json:"language,omitempty" msgpack:"language,omitempty"`
 	Latency     LatencyMode      `json:"latency,omitempty" msgpack:"latency,omitempty"`
 	Prosody     *Prosody         `json:"prosody,omitempty" msgpack:"prosody,omitempty"`
 	TopP        float64          `json:"top_p,omitempty" msgpack:"top_p,omitempty"`
@@ -130,6 +148,7 @@ func (s *TTSService) Convert(ctx context.Context, params *ConvertParams) ([]byte
 		References:  params.References,
 		Format:      params.Format,
 		Latency:     params.Latency,
+		Language:    params.Language,
 		Speed:       params.Speed,
 		Config:      params.Config,
 	})
@@ -179,6 +198,7 @@ func (s *TTSService) buildRequest(params *StreamParams) *ttsRequest {
 		References:  params.References,
 		Format:      params.Format,
 		Latency:     params.Latency,
+		Language:    params.Language,
 	}
 
 	// Apply speed as prosody
@@ -203,6 +223,9 @@ func (s *TTSService) buildRequest(params *StreamParams) *ttsRequest {
 		}
 		if cfg.Normalize != nil {
 			req.Normalize = cfg.Normalize
+		}
+		if cfg.Language != "" && req.Language == "" {
+			req.Language = cfg.Language
 		}
 		if cfg.ChunkLength != 0 {
 			req.ChunkLength = cfg.ChunkLength
@@ -254,6 +277,7 @@ type wsResponse struct {
 	Event  string `msgpack:"event"`
 	Audio  []byte `msgpack:"audio,omitempty"`
 	Reason string `msgpack:"reason,omitempty"`
+	Error  string `msgpack:"error,omitempty"`
 }
 
 // StreamWebSocket streams text to speech over WebSocket for real-time generation.
@@ -389,6 +413,15 @@ func (s *TTSService) StreamWebSocket(ctx context.Context, textChan <-chan string
 				if len(resp.Audio) > 0 {
 					audioChan <- resp.Audio
 				}
+			case "error":
+				// Sent when the API rejects the start event (for example an
+				// invalid language tag). Nothing follows it, so stop here
+				// instead of waiting for audio or a finish event.
+				select {
+				case errChan <- &WebSocketError{Message: resp.Error}:
+				default:
+				}
+				return
 			case "finish":
 				// "stop" is normal - means we requested the stop
 				// Only treat "error" as an actual error
@@ -433,12 +466,27 @@ func (s *WebSocketAudioStream) Next() bool {
 	case chunk, ok := <-s.audioChan:
 		if !ok {
 			s.closed = true
+			s.takeQueuedError()
 			return false
 		}
 		s.buf = chunk
 		return true
 	case err := <-s.errChan:
 		s.err = err
+		return false
+	}
+}
+
+// takeQueuedError records an error the receiver queued before it closed the
+// audio channel. Once both channels are ready, select picks one at random, so
+// without this check a failed stream could end as if it had finished cleanly.
+// The caller must hold s.mu.
+func (s *WebSocketAudioStream) takeQueuedError() bool {
+	select {
+	case err := <-s.errChan:
+		s.err = err
+		return true
+	default:
 		return false
 	}
 }
@@ -485,6 +533,9 @@ func (s *WebSocketAudioStream) Read(p []byte) (n int, err error) {
 	select {
 	case chunk, ok := <-s.audioChan:
 		if !ok {
+			if s.takeQueuedError() {
+				return 0, s.err
+			}
 			return 0, io.EOF
 		}
 		n = copy(p, chunk)
