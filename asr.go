@@ -99,7 +99,7 @@ func (s *ASRService) Transcribe(ctx context.Context, audio []byte, params *Trans
 
 	req.Header.Set("Authorization", "Bearer "+s.client.apiKey)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("User-Agent", "fish-audio/go/"+Version)
+	req.Header.Set("User-Agent", userAgent)
 
 	// Execute request
 	resp, err := s.client.httpClient.Do(req)
