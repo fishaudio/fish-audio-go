@@ -94,6 +94,9 @@ func TestModel_Values(t *testing.T) {
 		{ModelSpeech16, "speech-1.6"},
 		{ModelS1, "s1"},
 		{ModelS2Pro, "s2-pro"},
+		{ModelS21Pro, "s2.1-pro"},
+		{ModelS21ProFree, "s2.1-pro-free"},
+		{ModelDrama3, "drama-3"},
 	}
 
 	for _, tt := range tests {

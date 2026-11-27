@@ -1,4 +1,7 @@
-![go.png](https://raw.githubusercontent.com/fishaudio/fish-audio-go/refs/heads/main/.github/assets/go.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/fishaudio/fish-audio-go/refs/heads/main/.github/assets/banner-dark.svg" />
+  <img alt="Fish Audio Go SDK" src="https://raw.githubusercontent.com/fishaudio/fish-audio-go/refs/heads/main/.github/assets/banner-light.svg" />
+</picture>
 
 # Fish Audio Go SDK
 
@@ -83,6 +86,18 @@ audio, err := client.TTS.Convert(ctx, &fishaudio.ConvertParams{
 	Speed: 1.5, // 1.5x speed
 })
 ```
+
+**Choosing a model:**
+
+```go
+// Defaults to fishaudio.ModelS21Pro ("s2.1-pro") when Model is not set
+audio, err := client.TTS.Convert(ctx, &fishaudio.ConvertParams{
+	Text:  "Hello with Drama 3!",
+	Model: fishaudio.ModelDrama3,
+})
+```
+
+Available models: `ModelS21Pro` (default), `ModelS21ProFree`, `ModelDrama3`, `ModelS2Pro` and `ModelS1` (retires 2026-12-31).
 
 **Reusable configuration:**
 

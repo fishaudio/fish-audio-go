@@ -105,7 +105,7 @@ func (s *ASRService) StreamWebSocket(ctx context.Context, audio <-chan []byte, p
 	}
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+s.client.apiKey)
-	header.Set("User-Agent", "fish-audio/go/"+Version)
+	header.Set("User-Agent", userAgent)
 	header.Set("model", string(model))
 
 	dialer := websocket.Dialer{

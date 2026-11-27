@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"runtime"
@@ -119,9 +120,31 @@ func TestASRRealtime_BasicFlow(t *testing.T) {
 	if got := header.Get("model"); got != "transcribe-stream-1" {
 		t.Errorf("model header = %q, want the realtime default", got)
 	}
-	if got := header.Get("User-Agent"); got != "fish-audio/go/"+Version {
-		t.Errorf("User-Agent = %q", got)
+	if got := header.Values("User-Agent"); len(got) != 1 || got[0] != userAgent {
+		t.Errorf("handshake User-Agent = %q, want exactly [%q]", got, userAgent)
 	}
+}
+
+// A refused handshake carried the User-Agent too, like every other request.
+func TestASRRealtime_RefusedHandshakeSentUserAgent(t *testing.T) {
+	asrTestDeadline(t)
+	headers := make(chan http.Header, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headers <- r.Header.Clone()
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := NewClient(WithAPIKey("test-key"), WithBaseURL(server.URL))
+	_, err := client.ASR.StreamWebSocket(context.Background(), make(chan []byte), nil, nil)
+	var authErr *AuthenticationError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("error = %T (%v), want *AuthenticationError", err, err)
+	}
+	if got := (<-headers).Values("User-Agent"); len(got) != 1 || got[0] != userAgent {
+		t.Errorf("handshake User-Agent = %q, want exactly [%q]", got, userAgent)
+	}
+	assertNoASRGoroutines(t)
 }
 
 func TestASRRealtime_ModelHeader(t *testing.T) {

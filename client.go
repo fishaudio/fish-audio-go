@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime"
+	"strings"
 	"time"
 )
 
@@ -19,8 +21,66 @@ const (
 	DefaultTimeout = 240 * time.Second
 
 	// Version is the SDK version.
-	Version = "1.1.0" // x-release-please-version
+	Version = "1.1.1" // x-release-please-version
 )
+
+// product is the SDK's product, fish-audio-go/<Version>: the format every Fish
+// Audio SDK sends (one RFC 9110 product, token "/" token), so the API can tell
+// which SDK and version made a request.
+const product = "fish-audio-go/" + Version
+
+// userAgent is what the SDK sends: the product and a comment with the Go
+// version and the OS, e.g. "fish-audio-go/1.2.0 (go 1.24.1; linux)". It is
+// computed once.
+var userAgent = buildUserAgent(runtime.Version(), runtime.GOOS)
+
+// buildUserAgent returns "<product> (go <go version>; <os>)". It includes
+// only the runtime, its version and the OS family: nothing that identifies a
+// person or machine.
+func buildUserAgent(goVersion, goos string) string {
+	version := strings.TrimPrefix(commentValue(goVersion), "go")
+	if version == "" {
+		version = "unknown"
+	}
+	return product + " (go " + version + "; " + commentValue(strings.ToLower(goos)) + ")"
+}
+
+// commentValue makes a value safe inside an RFC 9110 comment. It keeps the
+// leading run of letters, digits and "._+-" (at most 32 bytes) and drops the
+// rest, so "(", ")", "\", whitespace and control characters never reach the
+// header. It returns "unknown" when nothing usable is left.
+func commentValue(value string) string {
+	value = strings.TrimSpace(value)
+	end := 0
+	for end < len(value) && end < 32 && isCommentSafe(value[end]) {
+		end++
+	}
+	if end == 0 {
+		return "unknown"
+	}
+	return value[:end]
+}
+
+func isCommentSafe(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+		c == '.' || c == '_' || c == '+' || c == '-'
+}
+
+// userAgentWith returns the User-Agent to send: the SDK's product and runtime
+// comment, followed by the caller's value if there is one. A caller's value is
+// appended rather than allowed to replace the SDK's, as in the other Fish
+// Audio SDKs, so an app can name itself without hiding which SDK made the
+// request.
+func userAgentWith(caller string) string {
+	caller = strings.TrimSpace(caller)
+	if caller == userAgent || strings.HasPrefix(caller, userAgent+" ") {
+		caller = strings.TrimSpace(caller[len(userAgent):])
+	}
+	if caller == "" {
+		return userAgent
+	}
+	return userAgent + " " + caller
+}
 
 // Client is the Fish Audio API client.
 type Client struct {
@@ -95,7 +155,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 
 	// Set headers
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("User-Agent", "fish-audio/go/"+Version)
+	req.Header.Set("User-Agent", userAgent)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -103,6 +163,10 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	// Apply request options
 	if opts != nil {
 		for k, v := range opts.AdditionalHeaders {
+			if http.CanonicalHeaderKey(k) == "User-Agent" {
+				req.Header.Set("User-Agent", userAgentWith(v))
+				continue
+			}
 			req.Header.Set(k, v)
 		}
 		if len(opts.AdditionalQueryParams) > 0 {
