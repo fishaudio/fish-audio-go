@@ -1044,6 +1044,126 @@ func TestASRRealtime_ControlGoesAheadOfWaitingAudio(t *testing.T) {
 	assertNoASRGoroutines(t)
 }
 
+// A failed write ends the session but takes nothing away from what the server
+// had already sent: not the events waiting to be read, and not the error the
+// server ended the session with.
+func TestASRRealtime_FailedWriteKeepsWhatWasReceived(t *testing.T) {
+	asrTestDeadline(t)
+	failWrite := func(t *testing.T, stream *ASRRealtimeStream) {
+		t.Helper()
+		if err := stream.conn.NetConn().(*net.TCPConn).CloseWrite(); err != nil {
+			t.Fatal(err)
+		}
+		if err := stream.Finalize(); err == nil {
+			t.Fatal("Finalize() = nil on a connection that cannot be written to")
+		}
+	}
+
+	// The buffer is full and the reader holds one more event.
+	t.Run("events waiting to be read", func(t *testing.T) {
+		shortGrace(t)
+		release := make(chan struct{})
+		f := newFakeASRServer(t, func(c *fakeASRConn) {
+			if c.start() == nil {
+				return
+			}
+			for i := 0; i < asrEventBuffer; i++ {
+				c.send(msg{"type": "draft", "turn_index": 0, "text": "x", "settled_text": "", "audio_ms": 0})
+			}
+			<-release
+		})
+		t.Cleanup(func() { close(release) })
+		opts := DefaultWebSocketOptions()
+		opts.PingInterval = 0
+		stream, err := f.client().ASR.StreamWebSocket(context.Background(), make(chan []byte), nil, opts)
+		if err != nil {
+			t.Fatalf("StreamWebSocket() error = %v", err)
+		}
+		within(t, "the buffer to fill", func() {
+			for len(stream.events) < asrEventBuffer {
+				time.Sleep(time.Millisecond)
+			}
+		})
+		failWrite(t, stream)
+		within(t, "the session to end", func() { <-stream.done })
+
+		events := collect(t, stream)
+		// Every queued event, and the one the reader held if it had it.
+		if n := len(events); n != asrEventBuffer && n != asrEventBuffer+1 {
+			t.Fatalf("got %d events, want %d or %d", n, asrEventBuffer, asrEventBuffer+1)
+		}
+		for i, event := range events[1:] {
+			if d, ok := event.(*ASRDraftEvent); !ok || d.Seq != i+1 {
+				t.Fatalf("event %d = %+v, want the draft with seq %d", i+1, event, i+1)
+			}
+		}
+		var wsErr *WebSocketError
+		if !errors.As(stream.Err(), &wsErr) {
+			t.Errorf("Err() = %T (%v), want *WebSocketError", stream.Err(), stream.Err())
+		}
+		assertNoASRGoroutines(t)
+	})
+
+	// The server has ended the session with an error and is still
+	// committing the open turn when a write fails.
+	t.Run("server error already received", func(t *testing.T) {
+		const grace = 50 * time.Millisecond
+		oldGrace := asrCloseGrace
+		asrCloseGrace = grace
+		var stream *ASRRealtimeStream
+		defer func() {
+			if stream != nil {
+				stream.wg.Wait() // the writer has read the wait by now
+			}
+			asrCloseGrace = oldGrace
+		}()
+		commit := make(chan struct{})
+		f := newFakeASRServer(t, func(c *fakeASRConn) {
+			if c.start() == nil {
+				return
+			}
+			c.send(msg{"type": "error", "code": 413, "error_type": "max_duration_exceeded", "message": "session too long",
+				"request_id": "req-1", "recoverable": false})
+			<-commit
+			c.commit("please cancel my order", "finalize")
+			c.close(4413, "max duration exceeded")
+		})
+		opts := DefaultWebSocketOptions()
+		opts.PingInterval = 0
+		var err error
+		stream, err = f.client().ASR.StreamWebSocket(context.Background(), make(chan []byte), nil, opts)
+		if err != nil {
+			t.Fatalf("StreamWebSocket() error = %v", err)
+		}
+		within(t, "the error to arrive", func() {
+			for !stream.fatal.Load() {
+				time.Sleep(time.Millisecond)
+			}
+		})
+		failWrite(t, stream)
+		time.Sleep(4 * grace) // well past the wait that follows a failed send
+		select {
+		case <-stream.done:
+			t.Fatalf("the failed send ended the session, with %v", stream.Err())
+		default:
+		}
+		close(commit)
+
+		if got, want := eventTypes(collect(t, stream)), []string{"session_started", "committed"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("events = %v, want %v", got, want)
+		}
+		var rtErr *ASRRealtimeError
+		if !errors.As(stream.Err(), &rtErr) {
+			t.Fatalf("Err() = %T (%v), want *ASRRealtimeError", stream.Err(), stream.Err())
+		}
+		want := ASRRealtimeError{Message: "session too long", ErrorType: "max_duration_exceeded", Code: 413, RequestID: "req-1", CloseCode: 4413}
+		if *rtErr != want {
+			t.Errorf("Err() = %+v, want %+v", *rtErr, want)
+		}
+		assertNoASRGoroutines(t)
+	})
+}
+
 // A write that fails ends the session, whichever write it was. The reader
 // cannot be relied on to notice: a connection can refuse writes while a read
 // on it just keeps waiting. Here the client's sending side is shut, and the
@@ -1476,8 +1596,8 @@ func TestASRRealtime_CtxDoneAfterNormalEndKeepsEvents(t *testing.T) {
 	})
 }
 
-// When ctx or a failed send ends a session, the session is marked as ended
-// and its unread events are dropped in one step. Otherwise there is a moment
+// When ctx ends a session (or anything else that drops its unread events),
+// the session is marked as ended and the events are dropped in one step. Otherwise there is a moment
 // in which Err already reports the failure while Next still hands out a
 // buffered event. The hook looks at the session at the instant it is marked
 // as ended, from the goroutine that ended it.
@@ -1490,7 +1610,7 @@ func TestASRRealtime_EndedAndDiscardedTogether(t *testing.T) {
 		want error
 	}{
 		{"ctx", func(_ *ASRRealtimeStream, cancel context.CancelFunc) { cancel() }, context.Canceled},
-		{"failed send", func(stream *ASRRealtimeStream, _ context.CancelFunc) { go stream.abort(errSend) }, errSend},
+		{"abort", func(stream *ASRRealtimeStream, _ context.CancelFunc) { go stream.abort(errSend) }, errSend},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -247,13 +248,18 @@ type ASRRealtimeStream struct {
 	done     chan struct{}
 	doneOnce sync.Once
 	// aborted is closed when the events not yet delivered are dropped: by
-	// whichever of ctx or a failed send ended the session, and by Close at
-	// any time. It is not closed by one of those arriving after the session
-	// had ended otherwise.
+	// ctx if it ended the session (or the startup), and by Close at any
+	// time. It is not closed by ctx arriving after the session had ended
+	// otherwise.
 	aborted   chan struct{}
 	abortOnce sync.Once
 
 	wg sync.WaitGroup
+
+	// fatal is set by readLoop once the server has sent an error that ends
+	// the session: the session's result is known and readLoop will report
+	// it.
+	fatal atomic.Bool
 
 	mu sync.Mutex
 	// stopWatchingCtx releases the watch on ctx once the session has ended.
@@ -261,9 +267,11 @@ type ASRRealtimeStream struct {
 	stopWatchingCtx func() bool
 	err             error
 	current         ASREvent
-	// last is the session_done event, delivered by Next once events is
-	// drained. It is not queued in events: the session has ended by then and
-	// the watch on ctx with it, so readLoop must not wait for room there.
+	// last is the final event, delivered by Next once events is drained:
+	// session_done, or the event readLoop was holding when a failed send
+	// ended the session. It is not queued in events: the session has ended
+	// by then and the watch on ctx with it, so readLoop must not wait for
+	// room there.
 	last ASREvent
 }
 
@@ -272,7 +280,8 @@ type ASRRealtimeStream struct {
 //
 // Events the server sent before a normal end or a server-side failure are all
 // delivered first, including a turn it commits after the error that ends the
-// session (at the session's duration limit, for one). After Close, or once a canceled ctx or a failed send has
+// session (at the session's duration limit, for one), and so are the events
+// received before a send failed. After Close, or once a canceled ctx has
 // ended the session, Next returns false at once. What ended the session
 // decides: a ctx canceled after the session had already ended drops nothing.
 func (s *ASRRealtimeStream) Next() bool {
@@ -295,7 +304,7 @@ func (s *ASRRealtimeStream) Next() bool {
 	}
 }
 
-// nextLast advances to session_done, once: it follows every queued event.
+// nextLast advances to the final event, once: it follows every queued event.
 func (s *ASRRealtimeStream) nextLast() bool {
 	select {
 	case <-s.aborted:
@@ -508,8 +517,8 @@ func (s *ASRRealtimeStream) ctxDone(ctx context.Context) {
 	s.abort(asrContextError(ctx))
 }
 
-// abort ends the session from this side (ctx, a failed send) and drops the
-// events not yet delivered. It does nothing, and drops nothing, if the
+// abort ends the session from this side (ctx, a failed startup) and drops
+// the events not yet delivered. It does nothing, and drops nothing, if the
 // session has already ended.
 func (s *ASRRealtimeStream) abort(err error) {
 	s.end(err, true)
@@ -550,9 +559,7 @@ func (s *ASRRealtimeStream) readLoop() {
 			case *ASRErrorEvent, *ASRSessionDoneEvent, *ASRSessionStartedEvent:
 				continue
 			}
-			select {
-			case s.events <- event:
-			case <-s.aborted:
+			if !s.deliver(event) {
 				return
 			}
 			continue
@@ -566,6 +573,7 @@ func (s *ASRRealtimeStream) readLoop() {
 				// its code along with the error, and for whatever the
 				// server still commits before it.
 				fatal = true
+				s.fatal.Store(true)
 				_ = s.conn.SetReadDeadline(time.Now().Add(asrFatalGrace))
 				continue
 			}
@@ -594,14 +602,29 @@ func (s *ASRRealtimeStream) readLoop() {
 			}
 		}
 
-		// Blocks while the buffer is full: backpressure on the socket. The
-		// session has not ended here, so Close, ctx and a failed send all
-		// release it through aborted.
-		select {
-		case s.events <- event:
-		case <-s.aborted:
+		if !s.deliver(event) {
 			return
 		}
+	}
+}
+
+// deliver queues an event for Next and reports whether readLoop goes on. It
+// blocks while the buffer is full: backpressure on the socket. Two things
+// release it. If the unread events are dropped (Close, ctx), so is this one.
+// If the session has ended otherwise (a failed send), the event is kept for
+// Next like every event before it, in the place of session_done, which such
+// a session will not get; readLoop has nothing more to read then.
+func (s *ASRRealtimeStream) deliver(event ASREvent) bool {
+	select {
+	case s.events <- event:
+		return true
+	case <-s.aborted:
+		return false
+	case <-s.done:
+		s.mu.Lock()
+		s.last = event
+		s.mu.Unlock()
+		return false
 	}
 }
 
@@ -774,12 +797,21 @@ func (s *ASRRealtimeStream) sendLoop(audio <-chan []byte, pingInterval time.Dura
 // connection, and readLoop then knows why: give it a moment to report that
 // before reporting the write error itself. readLoop cannot be left to it
 // alone: a connection can refuse writes while a read on it keeps waiting.
+//
+// If the server has already sent the error that ends the session, that is
+// the result and readLoop reports it, within its own wait. And a failed
+// write drops nothing: what the server sent before it is still delivered.
 func (s *ASRRealtimeStream) sendFailed(err error) {
 	timer := time.NewTimer(asrCloseGrace)
 	defer timer.Stop()
 	select {
 	case <-s.done:
+		return
 	case <-timer.C:
-		s.abort(err)
 	}
+	if s.fatal.Load() {
+		<-s.done
+		return
+	}
+	s.finish(err)
 }
