@@ -30,8 +30,25 @@ type ASRResponse struct {
 	Segments []ASRSegment `json:"segments"`
 }
 
+// ASRModel specifies a speech-to-text model.
+type ASRModel string
+
+const (
+	// ASRModelTranscribe1 is the API's default model for file transcription.
+	ASRModelTranscribe1 ASRModel = "transcribe-1"
+	// ASRModelTranscribe1Pro is the recommended model for file transcription.
+	ASRModelTranscribe1Pro ASRModel = "transcribe-1-pro"
+	// ASRModelTranscribeStream1 is the realtime model (Preview), used by
+	// ASRService.StreamWebSocket.
+	ASRModelTranscribeStream1 ASRModel = "transcribe-stream-1"
+)
+
 // TranscribeParams contains parameters for ASR transcription.
 type TranscribeParams struct {
+	// Model is the ASR model, e.g. ASRModelTranscribe1Pro (recommended). It is
+	// sent as the "model" header. If empty, no header is sent and the request
+	// runs on the API's default model.
+	Model ASRModel
 	// Language is the language code (e.g., "en", "zh"). Auto-detected if empty.
 	Language string
 	// IncludeTimestamps indicates whether to include timestamp information. Default: true.
@@ -49,6 +66,7 @@ type ASRService struct {
 //
 //	audio, _ := os.ReadFile("audio.mp3")
 //	result, err := client.ASR.Transcribe(ctx, audio, &fishaudio.TranscribeParams{
+//	    Model:    fishaudio.ASRModelTranscribe1Pro,
 //	    Language: "en",
 //	})
 //	fmt.Println(result.Text)
@@ -100,6 +118,9 @@ func (s *ASRService) Transcribe(ctx context.Context, audio []byte, params *Trans
 	req.Header.Set("Authorization", "Bearer "+s.client.apiKey)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("User-Agent", userAgent)
+	if params.Model != "" {
+		req.Header.Set("model", string(params.Model))
+	}
 
 	// Execute request
 	resp, err := s.client.httpClient.Do(req)
