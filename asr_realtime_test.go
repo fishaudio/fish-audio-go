@@ -662,6 +662,45 @@ func TestASRRealtime_FatalErrorEvent(t *testing.T) {
 	assertNoASRGoroutines(t) // without Close
 }
 
+// At the session's duration limit the server commits the open turn and closes
+// with 4413. Whichever side of the error message that commit arrives on, it
+// is delivered: the caller's last words are not dropped because the session
+// is ending.
+func TestASRRealtime_EventsAfterFatalErrorAreDelivered(t *testing.T) {
+	asrTestDeadline(t)
+	f := newFakeASRServer(t, func(c *fakeASRConn) {
+		if c.start() == nil {
+			return
+		}
+		c.send(msg{"type": "error", "code": 413, "error_type": "max_duration_exceeded", "message": "session too long",
+			"request_id": "req-1", "recoverable": false})
+		c.commit("please cancel my order", "finalize")
+		// Nothing after the error can turn the session into a success or
+		// replace the error.
+		c.send(msg{"type": "error", "code": 400, "error_type": "invalid_request", "message": "late",
+			"request_id": "req-2", "recoverable": true})
+		c.send(msg{"type": "session_done", "stats": msg{"audio_ms": 0, "turns": 1, "request_id": "req-1"}})
+		c.close(4413, "max duration exceeded")
+	})
+	stream := mustStream(t, f, context.Background(), make(chan []byte), nil)
+	events := collect(t, stream)
+	if got, want := eventTypes(events), []string{"session_started", "committed"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+	if c := events[1].(*ASRCommittedEvent); c.Text != "please cancel my order" || c.Reason != "finalize" {
+		t.Errorf("committed = %+v", c)
+	}
+	var rtErr *ASRRealtimeError
+	if !errors.As(stream.Err(), &rtErr) {
+		t.Fatalf("Err() = %T (%v), want *ASRRealtimeError", stream.Err(), stream.Err())
+	}
+	want := ASRRealtimeError{Message: "session too long", ErrorType: "max_duration_exceeded", Code: 413, RequestID: "req-1", CloseCode: 4413}
+	if *rtErr != want {
+		t.Errorf("Err() = %+v, want %+v", *rtErr, want)
+	}
+	assertNoASRGoroutines(t)
+}
+
 // A fatal error is reported even when the server never closes the connection.
 func TestASRRealtime_FatalErrorWithoutClose(t *testing.T) {
 	asrTestDeadline(t)
@@ -672,13 +711,13 @@ func TestASRRealtime_FatalErrorWithoutClose(t *testing.T) {
 		}
 		c.send(msg{"type": "error", "code": 500, "error_type": "internal", "message": "boom",
 			"request_id": "req-1", "recoverable": false})
-		c.commit("after the error", "eot") // not part of the session any more
+		c.commit("after the error", "eot") // still delivered
 		c.waitClosed(5 * time.Second)
 	})
 
 	stream := mustStream(t, f, context.Background(), make(chan []byte), nil)
 	events := collect(t, stream)
-	if got, want := eventTypes(events), []string{"session_started"}; !reflect.DeepEqual(got, want) {
+	if got, want := eventTypes(events), []string{"session_started", "committed"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("events = %v, want %v", got, want)
 	}
 	var rtErr *ASRRealtimeError

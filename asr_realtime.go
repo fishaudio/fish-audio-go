@@ -262,7 +262,8 @@ type ASRRealtimeStream struct {
 // ended; check Err to see whether it ended with an error.
 //
 // Events the server sent before a normal end or a server-side failure are all
-// delivered first. After Close, or once a canceled ctx or a failed send has
+// delivered first, including a turn it commits after the error that ends the
+// session (at the session's duration limit, for one). After Close, or once a canceled ctx or a failed send has
 // ended the session, Next returns false at once. What ended the session
 // decides: a ctx canceled after the session had already ended drops nothing.
 func (s *ASRRealtimeStream) Next() bool {
@@ -532,7 +533,20 @@ func (s *ASRRealtimeStream) readLoop() {
 			continue // a message type this SDK does not know
 		}
 		if fatal {
-			continue // nothing after a fatal error is part of the session
+			// The session is ending with lastError and nothing changes that:
+			// not another error, not a session_done. What the server still
+			// sends about the audio is delivered, though: at the duration
+			// limit it commits the open turn on its way out.
+			switch event.(type) {
+			case *ASRErrorEvent, *ASRSessionDoneEvent, *ASRSessionStartedEvent:
+				continue
+			}
+			select {
+			case s.events <- event:
+			case <-s.aborted:
+				return
+			}
+			continue
 		}
 
 		switch e := event.(type) {
