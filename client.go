@@ -21,7 +21,7 @@ const (
 	DefaultTimeout = 240 * time.Second
 
 	// Version is the SDK version.
-	Version = "1.1.1" // x-release-please-version
+	Version = "1.2.0" // x-release-please-version
 )
 
 // product is the SDK's product, fish-audio-go/<Version>: the format every Fish

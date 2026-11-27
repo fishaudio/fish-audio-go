@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/fishaudio/fish-audio-go/compare/v1.1.1...v1.2.0) (2026-11-27)
+
+
+### Features
+
+* add s2.1-pro, s2.1-pro-free and drama-3 models; default to s2.1-pro ([#15](https://github.com/fishaudio/fish-audio-go/issues/15)) ([e8e5e05](https://github.com/fishaudio/fish-audio-go/commit/e8e5e051dd0d01a041a72bd63f1689c9aedb0ff7))
+* send User-Agent fish-audio-go/&lt;version&gt;, also on the TTS WebSocket ([#22](https://github.com/fishaudio/fish-audio-go/issues/22)) ([b22fb12](https://github.com/fishaudio/fish-audio-go/commit/b22fb1284b24a30512622893bf5a0a19c585cdf1))
+
 ## [1.1.1](https://github.com/fishaudio/fish-audio-go/compare/v1.1.0...v1.1.1) (2026-11-24)
 
 
