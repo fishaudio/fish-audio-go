@@ -301,7 +301,7 @@ func (s *VoicesService) Create(ctx context.Context, params *CreateVoiceParams) (
 
 	if resp.StatusCode >= 400 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, newAPIError(resp.StatusCode, resp.Status, string(bodyBytes))
+		return nil, newAPIError(resp.StatusCode, resp.Status, string(bodyBytes), resp.Header)
 	}
 
 	var result Voice
@@ -379,7 +379,7 @@ func (s *VoicesService) Update(ctx context.Context, voiceID string, params *Upda
 
 	if resp.StatusCode >= 400 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return newAPIError(resp.StatusCode, resp.Status, string(bodyBytes))
+		return newAPIError(resp.StatusCode, resp.Status, string(bodyBytes), resp.Header)
 	}
 
 	return nil

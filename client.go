@@ -186,7 +186,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	if resp.StatusCode >= 400 {
 		defer func() { _ = resp.Body.Close() }()
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, newAPIError(resp.StatusCode, resp.Status, string(bodyBytes))
+		return nil, newAPIError(resp.StatusCode, resp.Status, string(bodyBytes), resp.Header)
 	}
 
 	return resp, nil
