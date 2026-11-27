@@ -24,7 +24,7 @@ type ASRSegment struct {
 type ASRResponse struct {
 	// Text is the complete transcription of the audio.
 	Text string `json:"text"`
-	// Duration is the total audio duration in milliseconds.
+	// Duration is the total audio duration in seconds.
 	Duration float64 `json:"duration"`
 	// Segments contains timestamped text segments.
 	Segments []ASRSegment `json:"segments"`
