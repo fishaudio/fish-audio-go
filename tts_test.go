@@ -957,6 +957,22 @@ func TestTTSService_StreamWebSocket_HeaderUserAgentIsAppended(t *testing.T) {
 	}
 }
 
+func TestTTSService_StreamWebSocket_HeaderUserAgentInTwoSpellings(t *testing.T) {
+	client, got := newHandshakeServer(t)
+
+	opts := DefaultWebSocketOptions()
+	opts.Header = http.Header{
+		"user-agent": {"integration/2.0"},
+		"User-Agent": {"my-app/1.0", "build/7"},
+	}
+	h := streamWebSocket(t, client, got, opts)
+
+	want := userAgent + " my-app/1.0 build/7 integration/2.0"
+	if v := h.Values("User-Agent"); len(v) != 1 || v[0] != want {
+		t.Errorf("handshake User-Agent = %q, want exactly [%q]", v, want)
+	}
+}
+
 func TestTTSService_StreamWebSocket_NilAndDefaultOptionsHeaders(t *testing.T) {
 	for name, opts := range map[string]*WebSocketOptions{
 		"nil":     nil,
