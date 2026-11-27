@@ -33,6 +33,10 @@ var (
 	asrCloseGrace = 2 * time.Second
 	// asrCloseFrameTimeout bounds the write of the close frame.
 	asrCloseFrameTimeout = 250 * time.Millisecond
+	// asrCtxSettle is how long a failed dial waits for a ctx whose deadline
+	// has passed to be done. A context's timer fires within moments of its
+	// deadline; this only bounds a ctx that never does.
+	asrCtxSettle = time.Second
 )
 
 // StreamWebSocket opens a realtime speech-to-text session and streams audio to
@@ -209,9 +213,11 @@ func (s *ASRService) StreamWebSocket(ctx context.Context, audio <-chan []byte, p
 //
 // A control message applies at its position in the audio stream: it is sent
 // after every chunk the session has already taken from the audio channel, and
-// before the chunks still waiting in it. With an unbuffered channel, a chunk
-// is taken when your send on the channel returns, so Finalize called after
-// that send follows the chunk.
+// before the chunks still waiting in it, because a waiting control message is
+// always picked before more audio. With an unbuffered channel, a chunk is
+// taken when your send on the channel returns, so Finalize called after that
+// send follows the chunk. A chunk offered at the very moment of the call may
+// land on either side.
 //
 // The stream ends when the server sends ASRSessionDoneEvent (after the audio
 // channel is closed), when the session fails, when ctx is canceled, or when
@@ -598,7 +604,8 @@ func asrContextError(ctx context.Context) error {
 // that was closed for it. It also puts ctx's deadline on the connection, whose
 // timer can fire before ctx's own: the upgrade then fails with a net timeout
 // while ctx.Err() is still nil. A timeout at or after ctx's deadline is
-// therefore ctx's deadline, whichever of the two reported it.
+// therefore ctx's deadline, whichever of the two reported it, and is
+// reported with ctx's cause.
 func asrStartupError(ctx context.Context, err error) error {
 	ctxErr := asrContextError(ctx)
 	if ctxErr == nil {
@@ -607,7 +614,17 @@ func asrStartupError(ctx context.Context, err error) error {
 		if !ok || time.Now().Before(deadline) || !errors.As(err, &netErr) || !netErr.Timeout() {
 			return err
 		}
-		ctxErr = context.DeadlineExceeded
+		// ctx is due: give it a moment to be done, since only then does it
+		// have its cause (context.WithTimeoutCause).
+		settle := time.NewTimer(asrCtxSettle)
+		select {
+		case <-ctx.Done():
+		case <-settle.C:
+		}
+		settle.Stop()
+		if ctxErr = asrContextError(ctx); ctxErr == nil {
+			ctxErr = context.DeadlineExceeded
+		}
 	}
 	if errors.Is(err, ctxErr) {
 		return err
@@ -672,7 +689,33 @@ func (s *ASRRealtimeStream) sendLoop(audio <-chan []byte, pingInterval time.Dura
 		ping = ticker.C
 	}
 
+	// control writes one control message and reports whether the session
+	// goes on.
+	control := func(request asrControl) bool {
+		// A failed write is the caller's to see, and the end of the
+		// session: nothing more can be written on this connection.
+		err := s.writeFrame(request.data)
+		request.result <- err
+		if err != nil {
+			s.sendFailed(err)
+			return false
+		}
+		return true
+	}
+
 	for {
+		// A control message that is waiting goes first. Left to the select
+		// below, it would be chosen at random against waiting audio, and a
+		// finalize could trail behind chunks of the next turn.
+		select {
+		case request := <-s.control:
+			if !control(request) {
+				return
+			}
+			continue
+		default:
+		}
+
 		select {
 		case <-s.done:
 			return
@@ -682,12 +725,7 @@ func (s *ASRRealtimeStream) sendLoop(audio <-chan []byte, pingInterval time.Dura
 				return
 			}
 		case request := <-s.control:
-			// A failed write is the caller's to see, and the end of the
-			// session: nothing more can be written on this connection.
-			err := s.writeFrame(request.data)
-			request.result <- err
-			if err != nil {
-				s.sendFailed(err)
+			if !control(request) {
 				return
 			}
 		case chunk, ok := <-audio:

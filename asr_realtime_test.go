@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -53,6 +54,15 @@ func eventTypes(events []ASREvent) []string {
 		types[i] = e.EventType()
 	}
 	return types
+}
+
+// shortSettle shortens the wait for a ctx past its deadline to be done, for
+// tests with a ctx that never is.
+func shortSettle(t *testing.T) {
+	t.Helper()
+	old := asrCtxSettle
+	asrCtxSettle = 20 * time.Millisecond
+	t.Cleanup(func() { asrCtxSettle = old })
 }
 
 // shortGrace shortens the wait for a close frame, for tests where none comes.
@@ -831,6 +841,82 @@ func TestASRRealtime_DroppedConnection(t *testing.T) {
 			t.Errorf("Err() = %+v, want %+v", *rtErr, want)
 		}
 	})
+}
+
+// A control message goes ahead of the audio still waiting in the channel.
+// The writer is held in the write of a chunk too large for a server that is
+// not reading; Finalize is then waiting to be picked up, and after that one
+// more chunk is put in the channel. When the server reads, finalize must come
+// before that chunk, every time: the writer may not choose between the two.
+func TestASRRealtime_ControlGoesAheadOfWaitingAudio(t *testing.T) {
+	asrTestDeadline(t)
+	// finalizeWaiting reports whether a Finalize call is parked at handing
+	// its message to the writer.
+	finalizeWaiting := func() bool {
+		buf := make([]byte, 1<<20)
+		for _, g := range strings.Split(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
+			if strings.Contains(g, "(*ASRRealtimeStream).send(") && strings.HasPrefix(g, "goroutine ") &&
+				strings.Contains(strings.SplitN(g, "\n", 2)[0], "[select") {
+				return true
+			}
+		}
+		return false
+	}
+	for i := 0; i < 10; i++ {
+		read := make(chan struct{})
+		order := make(chan []string, 1)
+		f := newFakeASRServer(t, func(c *fakeASRConn) {
+			if c.start() == nil {
+				return
+			}
+			<-read
+			var got []string
+			for len(got) < 3 {
+				m, _, ok := c.recv()
+				if !ok {
+					break
+				}
+				kind := m["type"].(string)
+				if data, isAudio := m["data"].([]byte); isAudio {
+					kind = fmt.Sprintf("audio(%d)", len(data))
+				}
+				got = append(got, kind)
+			}
+			order <- got
+		})
+		audio := make(chan []byte, 1)
+		stream := mustStream(t, f, context.Background(), audio, nil)
+
+		big := make([]byte, 16<<20) // more than the socket buffers hold
+		audio <- big
+		within(t, "the writer to take the first chunk", func() {
+			for len(audio) > 0 {
+				time.Sleep(time.Millisecond)
+			}
+		})
+		finalized := make(chan error, 1)
+		go func() { finalized <- stream.Finalize() }()
+		within(t, "Finalize to wait for the writer", func() {
+			for !finalizeWaiting() {
+				time.Sleep(time.Millisecond)
+			}
+		})
+		audio <- pcm(40) // waits in the channel, behind the pending finalize
+		close(read)
+
+		var got []string
+		within(t, "the server to read three messages", func() { got = <-order })
+		want := []string{fmt.Sprintf("audio(%d)", len(big)), "finalize", fmt.Sprintf("audio(%d)", len(pcm(40)))}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("run %d: server got %v, want %v", i, got, want)
+		}
+		if err := <-finalized; err != nil {
+			t.Fatalf("Finalize() = %v", err)
+		}
+		_ = stream.Close()
+		f.Close()
+	}
+	assertNoASRGoroutines(t)
 }
 
 // A write that fails ends the session, whichever write it was. The reader
@@ -1853,6 +1939,7 @@ func (c lateContext) Err() error            { return c.open.Err() }
 // of the race where the connection is first.
 func TestASRRealtime_DeadlineReportedByTheConnection(t *testing.T) {
 	asrTestDeadline(t)
+	shortSettle(t)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -1886,6 +1973,49 @@ func notDueDone() context.Context {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	cancel()
 	return ctx
+}
+
+// earlyDeadlineContext reports a deadline earlier than the moment it is done:
+// a ctx whose timer fires after the connection's, by a margin that does not
+// depend on scheduling. Everything but Deadline is the embedded ctx's.
+type earlyDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c earlyDeadlineContext) Deadline() (time.Time, bool) { return c.deadline, true }
+
+// The connection times out first, and ctx has a cause of its own
+// (context.WithTimeoutCause): the cause is only known once ctx is done, so
+// the error must wait for that and carry it, not settle for
+// context.DeadlineExceeded alone.
+func TestASRRealtime_DeadlineReportedByTheConnectionKeepsCause(t *testing.T) {
+	asrTestDeadline(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }() // accepts in its backlog, never answers
+
+	errBudget := errors.New("transcription budget used up")
+	done, cancel := context.WithTimeoutCause(context.Background(), 300*time.Millisecond, errBudget)
+	defer cancel()
+	ctx := earlyDeadlineContext{Context: done, deadline: time.Now().Add(50 * time.Millisecond)}
+
+	client := NewClient(WithAPIKey("k"), WithBaseURL("http://"+listener.Addr().String()))
+	within(t, "StreamWebSocket during a stalled handshake", func() {
+		_, err = client.ASR.StreamWebSocket(ctx, make(chan []byte), nil, nil)
+	})
+	for _, want := range []error{context.DeadlineExceeded, errBudget} {
+		if !errors.Is(err, want) {
+			t.Errorf("error = %v, want errors.Is(err, %v)", err, want)
+		}
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Errorf("error = %v, want the connection's timeout to stay reachable", err)
+	}
+	assertNoASRGoroutines(t)
 }
 
 // A timeout that is not ctx's is not reported as ctx's.
