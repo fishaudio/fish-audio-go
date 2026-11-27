@@ -287,6 +287,8 @@ func (s *TTSService) StreamWebSocket(ctx context.Context, textChan <-chan string
 		header[k] = append([]string(nil), v...)
 	}
 	header.Set("Authorization", "Bearer "+s.client.apiKey)
+	// Without this, the handshake would carry Go's default Go-http-client/1.1.
+	header.Set("User-Agent", userAgent)
 	if model := s.getModel(params); model != "" {
 		header.Set("model", string(model))
 	}
