@@ -97,7 +97,7 @@ audio, err := client.TTS.Convert(ctx, &fishaudio.ConvertParams{
 })
 ```
 
-Available models: `ModelS21Pro` (default), `ModelS21ProFree`, `ModelDrama3`, `ModelS2Pro` and `ModelS1` (retires 2026-12-31).
+Available models: `ModelS21Pro` (default), `ModelS21ProFree`, `ModelDrama3`, `ModelS3Pro`, `ModelS2Pro` and `ModelS1` (retires 2026-12-31).
 
 The `s2.1-pro` default and the `ModelS21Pro`, `ModelS21ProFree` and `ModelDrama3` constants are not in v1.1.1 or earlier; v1.1.0 and v1.1.1 default to `s2-pro`. In those releases, pass the model as a string, for example `Model: "drama-3"`.
 
