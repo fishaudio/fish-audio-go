@@ -269,6 +269,21 @@ if err != nil {
 }
 ```
 
+### Trace IDs
+
+Responses to speech and transcription requests carry an `x-fish-trace-id` header. Include it when you contact support about a request, also one that succeeded but sounds wrong. The stream or result of a call has the response headers:
+
+```go
+stream, err := client.TTS.Stream(ctx, &fishaudio.StreamParams{Text: "Hello!"})
+if err != nil {
+	return err // the stream could not be opened
+}
+audio, err := stream.Collect()
+traceID := stream.Header.Get("x-fish-trace-id") // also set when Collect fails
+```
+
+`TTS.StreamWebSocket` returns a stream with the same `Header` field (the headers of the handshake response), and `ASR.Transcribe` returns them as `result.Header`, next to `result.RequestID`. `TTS.Convert` returns only the audio; use `TTS.Stream` and `Collect` when you need the headers. A header the API did not send reads as `""`.
+
 ## Resources
 
 - **Documentation:** [Go package reference](https://pkg.go.dev/github.com/fishaudio/fish-audio-go) | [Fish Audio docs](https://docs.fish.audio)

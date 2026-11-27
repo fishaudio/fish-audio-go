@@ -287,7 +287,7 @@ func (s *TTSService) StreamWebSocket(ctx context.Context, textChan <-chan string
 		header.Set("model", string(model))
 	}
 
-	conn, _, err := dialer.DialContext(ctx, wsURL, header)
+	conn, resp, err := dialer.DialContext(ctx, wsURL, header)
 	if err != nil {
 		return nil, fmt.Errorf("websocket dial failed: %w", err)
 	}
@@ -404,6 +404,7 @@ func (s *TTSService) StreamWebSocket(ctx context.Context, textChan <-chan string
 	}()
 
 	return &WebSocketAudioStream{
+		Header:    resp.Header,
 		audioChan: audioChan,
 		errChan:   errChan,
 	}, nil
@@ -411,6 +412,11 @@ func (s *TTSService) StreamWebSocket(ctx context.Context, textChan <-chan string
 
 // WebSocketAudioStream wraps WebSocket audio chunks for iteration.
 type WebSocketAudioStream struct {
+	// Header holds the headers of the handshake response that opened the
+	// connection, for example x-fish-trace-id. It stays readable after the
+	// stream is closed or has failed.
+	Header http.Header `json:"-"`
+
 	audioChan <-chan []byte
 	errChan   <-chan error
 	buf       []byte

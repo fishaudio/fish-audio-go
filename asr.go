@@ -28,6 +28,12 @@ type ASRResponse struct {
 	Duration float64 `json:"duration"`
 	// Segments contains timestamped text segments.
 	Segments []ASRSegment `json:"segments"`
+	// RequestID identifies this request; quote it when reporting a problem
+	// with a transcription. Empty if the API did not return one.
+	RequestID string `json:"request_id,omitempty"`
+	// Header holds the headers of the HTTP response, for example
+	// x-fish-trace-id.
+	Header http.Header `json:"-"`
 }
 
 // TranscribeParams contains parameters for ASR transcription.
@@ -118,6 +124,7 @@ func (s *ASRService) Transcribe(ctx context.Context, audio []byte, params *Trans
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
+	result.Header = resp.Header
 
 	return &result, nil
 }
