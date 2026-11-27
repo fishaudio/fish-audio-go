@@ -71,7 +71,8 @@ type WebSocketOptions struct {
 	// Header holds extra headers sent on the WebSocket handshake, for
 	// example a W3C traceparent. It is copied when the connection is made.
 	// Authorization and model are always set by the SDK; entries with those
-	// names, in any casing, are ignored.
+	// names, in any casing, are ignored. A User-Agent, in any casing, is
+	// appended to the SDK's own.
 	Header http.Header
 }
 

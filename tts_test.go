@@ -942,6 +942,21 @@ func TestTTSService_StreamWebSocket_HeaderCannotReplaceAuthOrModel(t *testing.T)
 	}
 }
 
+func TestTTSService_StreamWebSocket_HeaderUserAgentIsAppended(t *testing.T) {
+	for _, key := range []string{"User-Agent", "user-agent"} {
+		client, got := newHandshakeServer(t)
+
+		opts := DefaultWebSocketOptions()
+		opts.Header = http.Header{key: {"my-app/1.0"}}
+		h := streamWebSocket(t, client, got, opts)
+
+		want := userAgent + " my-app/1.0"
+		if v := h.Values("User-Agent"); len(v) != 1 || v[0] != want {
+			t.Errorf("Header[%q]: handshake User-Agent = %q, want exactly [%q]", key, v, want)
+		}
+	}
+}
+
 func TestTTSService_StreamWebSocket_NilAndDefaultOptionsHeaders(t *testing.T) {
 	for name, opts := range map[string]*WebSocketOptions{
 		"nil":     nil,

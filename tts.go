@@ -279,16 +279,22 @@ func (s *TTSService) StreamWebSocket(ctx context.Context, textChan <-chan string
 	}
 
 	// Copy the caller's headers, then set auth and model; the SDK's own win.
+	// A caller's User-Agent is appended to the SDK's, as on HTTP calls.
 	header := http.Header{}
+	callerUserAgent := ""
 	for k, v := range opts.Header {
 		if strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "model") {
+			continue
+		}
+		if strings.EqualFold(k, "User-Agent") {
+			callerUserAgent = strings.Join(v, " ")
 			continue
 		}
 		header[k] = append([]string(nil), v...)
 	}
 	header.Set("Authorization", "Bearer "+s.client.apiKey)
 	// Without this, the handshake would carry Go's default Go-http-client/1.1.
-	header.Set("User-Agent", userAgent)
+	header.Set("User-Agent", userAgentWith(callerUserAgent))
 	if model := s.getModel(params); model != "" {
 		header.Set("model", string(model))
 	}
