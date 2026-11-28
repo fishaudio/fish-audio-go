@@ -269,6 +269,30 @@ if err != nil {
 }
 ```
 
+## Tracing
+
+The SDK does not create spans or inject trace headers itself. Your application propagates the W3C `traceparent`.
+
+Every HTTP call goes through the client passed to `WithHTTPClient`, so an `otelhttp` transport covers them all:
+
+```go
+otel.SetTextMapPropagator(propagation.TraceContext{})
+
+client := fishaudio.NewClient(fishaudio.WithHTTPClient(&http.Client{
+	Transport: otelhttp.NewTransport(http.DefaultTransport),
+}))
+```
+
+`TTS.StreamWebSocket` does not use that client. Put the trace on its handshake with `WebSocketOptions.Header`:
+
+```go
+h := http.Header{}
+propagation.TraceContext{}.Inject(ctx, propagation.HeaderCarrier(h))
+opts := fishaudio.DefaultWebSocketOptions()
+opts.Header = h
+wsStream, err := client.TTS.StreamWebSocket(ctx, textChan, params, opts)
+```
+
 ## Resources
 
 - **Documentation:** [Go package reference](https://pkg.go.dev/github.com/fishaudio/fish-audio-go) | [Fish Audio docs](https://docs.fish.audio)
