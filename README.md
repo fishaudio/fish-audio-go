@@ -183,6 +183,7 @@ wsStream, err := client.TTS.StreamWebSocket(ctx, textChan, &fishaudio.StreamPara
 if err != nil {
 	log.Fatal(err)
 }
+defer wsStream.Close() // releases the connection if you stop reading early
 
 for wsStream.Next() {
 	chunk := wsStream.Bytes()

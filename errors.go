@@ -54,11 +54,16 @@ type ServerError struct {
 // WebSocketError is raised when WebSocket connection or streaming fails.
 type WebSocketError struct {
 	Message string
+	// Err is the underlying error, if any.
+	Err error
 }
 
 func (e *WebSocketError) Error() string {
 	return e.Message
 }
+
+// Unwrap returns the underlying error, if any.
+func (e *WebSocketError) Unwrap() error { return e.Err }
 
 func (e *WebSocketError) IsFishAudioError() {}
 
